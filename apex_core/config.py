@@ -37,6 +37,7 @@ class LoggingChannels:
     payments: int
     tickets: int
     errors: int
+    order_logs: int | None = None
 
 
 @dataclass(frozen=True)
