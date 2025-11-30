@@ -22,27 +22,31 @@
   },
   "payment_methods": [
     {
-      "name": "PayPal",
-      "instructions": "Send payment to paypal@example.com with your Discord username in the notes",
-      "emoji": "💸",
+      "name": "Binance Pay",
+      "instructions": "Send the desired USD amount via Binance Pay and include your Discord username in the note field.",
+      "emoji": "🟡",
       "metadata": {
-        "email": "paypal@example.com"
+        "pay_id": "1234567890",
+        "reference": "Use your Discord username",
+        "url": "https://pay.binance.com/en"
       }
     },
     {
-      "name": "Crypto (BTC)",
-      "instructions": "Contact an admin for the current wallet address",
-      "emoji": "₿",
+      "name": "Tip.cc",
+      "instructions": "Use Tip.cc to send a tip to @ApexCore. Include the ticket channel link in your tip message.",
+      "emoji": "🤖",
       "metadata": {
-        "network": "Bitcoin"
+        "command": "/tip 25 @ApexCore",
+        "url": "https://tip.cc"
       }
     },
     {
-      "name": "Crypto (ETH)",
-      "instructions": "Contact an admin for the current wallet address",
-      "emoji": "Ξ",
+      "name": "Crypto Address",
+      "instructions": "Send USDT (TRC20) to the wallet below and reply in this ticket with the transaction hash.",
+      "emoji": "🪙",
       "metadata": {
-        "network": "Ethereum"
+        "network": "TRON (TRC20)",
+        "address": "TD1ExampleWalletAddress000000000000"
       }
     }
   ],

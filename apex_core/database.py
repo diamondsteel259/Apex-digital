@@ -70,6 +70,19 @@ class Database:
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                channel_id INTEGER UNIQUE NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tickets_user_status
+                ON tickets(user_discord_id, status);
             """
         )
         await self._connection.commit()
@@ -246,5 +259,80 @@ class Database:
             WHERE discord_id = ?
             """,
             (vip_tier, discord_id),
+        )
+        await self._connection.commit()
+
+    async def create_ticket(
+        self,
+        *,
+        user_discord_id: int,
+        channel_id: int,
+        status: str = "open",
+    ) -> int:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO tickets (user_discord_id, channel_id, status)
+            VALUES (?, ?, ?)
+            """,
+            (user_discord_id, channel_id, status),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def get_open_ticket_for_user(self, user_discord_id: int) -> Optional[aiosqlite.Row]:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT *
+            FROM tickets
+            WHERE user_discord_id = ? AND status = 'open'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_discord_id,),
+        )
+        return await cursor.fetchone()
+
+    async def get_ticket_by_channel(self, channel_id: int) -> Optional[aiosqlite.Row]:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            "SELECT * FROM tickets WHERE channel_id = ?",
+            (channel_id,),
+        )
+        return await cursor.fetchone()
+
+    async def update_ticket_status(self, channel_id: int, status: str) -> None:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            UPDATE tickets
+            SET status = ?,
+                last_activity = CURRENT_TIMESTAMP
+            WHERE channel_id = ?
+            """,
+            (status, channel_id),
+        )
+        await self._connection.commit()
+
+    async def touch_ticket_activity(self, channel_id: int) -> None:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            UPDATE tickets
+            SET last_activity = CURRENT_TIMESTAMP
+            WHERE channel_id = ?
+            """,
+            (channel_id,),
         )
         await self._connection.commit()
