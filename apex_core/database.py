@@ -41,7 +41,8 @@ class Database:
                 discord_id INTEGER UNIQUE NOT NULL,
                 wallet_balance_cents INTEGER NOT NULL DEFAULT 0,
                 total_lifetime_spent_cents INTEGER NOT NULL DEFAULT 0,
-                vip_tier TEXT,
+                has_client_role INTEGER NOT NULL DEFAULT 0,
+                manually_assigned_roles TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -262,20 +263,106 @@ class Database:
         cursor = await self._connection.execute(query)
         return await cursor.fetchall()
 
-    async def update_user_vip_tier(self, discord_id: int, vip_tier: Optional[str]) -> None:
+    async def mark_client_role_assigned(self, discord_id: int) -> None:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
 
         await self._connection.execute(
             """
             UPDATE users
-            SET vip_tier = ?,
+            SET has_client_role = 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE discord_id = ?
             """,
-            (vip_tier, discord_id),
+            (discord_id,),
         )
         await self._connection.commit()
+
+    async def get_manually_assigned_roles(self, discord_id: int) -> list[str]:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            "SELECT manually_assigned_roles FROM users WHERE discord_id = ?",
+            (discord_id,),
+        )
+        row = await cursor.fetchone()
+        if not row or not row["manually_assigned_roles"]:
+            return []
+
+        import json
+        try:
+            return json.loads(row["manually_assigned_roles"])
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    async def add_manually_assigned_role(self, discord_id: int, role_name: str) -> None:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        import json
+        
+        async with self._wallet_lock:
+            cursor = await self._connection.execute(
+                "SELECT manually_assigned_roles FROM users WHERE discord_id = ?",
+                (discord_id,),
+            )
+            row = await cursor.fetchone()
+            
+            roles = []
+            if row and row["manually_assigned_roles"]:
+                try:
+                    roles = json.loads(row["manually_assigned_roles"])
+                except (json.JSONDecodeError, TypeError):
+                    roles = []
+            
+            if role_name not in roles:
+                roles.append(role_name)
+            
+            await self._connection.execute(
+                """
+                UPDATE users
+                SET manually_assigned_roles = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE discord_id = ?
+                """,
+                (json.dumps(roles), discord_id),
+            )
+            await self._connection.commit()
+
+    async def remove_manually_assigned_role(self, discord_id: int, role_name: str) -> None:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        import json
+        
+        async with self._wallet_lock:
+            cursor = await self._connection.execute(
+                "SELECT manually_assigned_roles FROM users WHERE discord_id = ?",
+                (discord_id,),
+            )
+            row = await cursor.fetchone()
+            
+            roles = []
+            if row and row["manually_assigned_roles"]:
+                try:
+                    roles = json.loads(row["manually_assigned_roles"])
+                except (json.JSONDecodeError, TypeError):
+                    roles = []
+            
+            if role_name in roles:
+                roles.remove(role_name)
+            
+            await self._connection.execute(
+                """
+                UPDATE users
+                SET manually_assigned_roles = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE discord_id = ?
+                """,
+                (json.dumps(roles) if roles else None, discord_id),
+            )
+            await self._connection.commit()
 
     async def create_ticket(
         self,
