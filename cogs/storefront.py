@@ -13,7 +13,9 @@ from apex_core.utils import (
     calculate_vip_tier,
     create_embed,
     format_usd,
+    handle_vip_promotion,
     operating_hours_window,
+    process_post_purchase,
     render_operating_hours,
 )
 
@@ -426,11 +428,24 @@ class StorefrontCog(commands.Cog):
                 except discord.HTTPException as e:
                     logger.error("Failed to log order to channel %s: %s", log_channel_id, e)
 
-        new_vip_tier = calculate_vip_tier(
-            user_row["total_lifetime_spent_cents"] + final_price_cents, self.bot.config
+        # Process post-purchase actions including VIP promotion
+        old_vip_tier, new_vip_tier = await process_post_purchase(
+            user_discord_id=interaction.user.id,
+            amount_cents=final_price_cents,
+            db=self.bot.db,
+            config=self.bot.config,
+            guild=interaction.guild,
         )
-        if new_vip_tier and (not vip_tier or new_vip_tier.name != vip_tier.name):
-            await self.bot.db.update_user_vip_tier(interaction.user.id, new_vip_tier.name)
+        
+        # Handle VIP promotion notifications and role assignments
+        if new_vip_tier and (not old_vip_tier or new_vip_tier.name != old_vip_tier.name):
+            await handle_vip_promotion(
+                user_discord_id=interaction.user.id,
+                old_vip_tier=old_vip_tier,
+                new_vip_tier=new_vip_tier,
+                config=self.bot.config,
+                guild=interaction.guild,
+            )
 
     async def _handle_support_ticket(
         self, interaction: discord.Interaction, product_id: int
