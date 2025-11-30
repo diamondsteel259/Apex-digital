@@ -2,6 +2,7 @@
 
 from .currency import format_usd
 from .embeds import create_embed
+from .purchase import handle_vip_promotion, process_post_purchase
 from .timestamps import discord_timestamp, operating_hours_window, render_operating_hours
 from .vip import calculate_vip_tier
 
@@ -12,4 +13,6 @@ __all__ = [
     "render_operating_hours",
     "create_embed",
     "calculate_vip_tier",
+    "process_post_purchase",
+    "handle_vip_promotion",
 ]

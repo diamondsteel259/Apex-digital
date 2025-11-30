@@ -382,6 +382,83 @@ class Database:
         await self._connection.commit()
         return cursor.lastrowid
 
+    async def create_manual_order(
+        self,
+        *,
+        user_discord_id: int,
+        product_name: str,
+        price_paid_cents: int,
+        notes: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """
+        Create a manual order without affecting wallet balance.
+        
+        Args:
+            user_discord_id: Discord user ID
+            product_name: Name of the product (for logging)
+            price_paid_cents: Amount paid in cents
+            notes: Additional notes about the order
+        
+        Returns:
+            Tuple of (order_id, new_lifetime_spend_cents)
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            # Ensure user exists
+            await self.ensure_user(user_discord_id)
+            
+            # Update lifetime spend only (not wallet balance)
+            await self._connection.execute(
+                """
+                UPDATE users
+                SET total_lifetime_spent_cents = total_lifetime_spent_cents + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE discord_id = ?
+                """,
+                (price_paid_cents, user_discord_id),
+            )
+            
+            # Create order record with a dummy product_id (0 for manual orders)
+            import json
+            order_metadata = json.dumps({
+                "product_name": product_name,
+                "manual_order": True,
+                "notes": notes,
+            })
+            
+            cursor = await self._connection.execute(
+                """
+                INSERT INTO orders (
+                    user_discord_id, product_id, price_paid_cents,
+                    discount_applied_percent, order_metadata
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user_discord_id,
+                    0,  # product_id = 0 for manual orders
+                    price_paid_cents,
+                    0.0,  # No discount for manual orders
+                    order_metadata,
+                ),
+            )
+            order_id = cursor.lastrowid
+            
+            await self._connection.commit()
+            
+            # Get updated lifetime spend
+            cursor = await self._connection.execute(
+                "SELECT total_lifetime_spent_cents FROM users WHERE discord_id = ?",
+                (user_discord_id,),
+            )
+            row = await cursor.fetchone()
+            new_lifetime_spend = row["total_lifetime_spent_cents"] if row else 0
+            
+            return order_id, new_lifetime_spend
+
     async def purchase_product(
         self,
         *,
