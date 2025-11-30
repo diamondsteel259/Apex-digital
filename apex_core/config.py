@@ -42,11 +42,19 @@ class LoggingChannels:
 
 
 @dataclass(frozen=True)
+class Role:
+    name: str
+    role_id: int
+    assignment_mode: str
+    unlock_condition: int | str
+    discount_percent: float
+    benefits: list[str] = field(default_factory=list)
+    tier_priority: int = 0
+
+
+@dataclass(frozen=True)
 class RoleIDs:
     admin: int
-    vip_tier1: int
-    vip_tier2: int
-    vip_tier3: int
 
 
 @dataclass(frozen=True)
@@ -64,8 +72,9 @@ class Config:
     ticket_categories: TicketCategories
     operating_hours: OperatingHours
     payment_methods: list[PaymentMethod]
-    vip_thresholds: list[VipTier]
     logging_channels: LoggingChannels
+    roles: list[Role] = field(default_factory=list)
+    vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
 
 
