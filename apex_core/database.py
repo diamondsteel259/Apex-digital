@@ -34,6 +34,7 @@ class Database:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
 
+        # First create the basic schema if it doesn't exist
         await self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -49,8 +50,15 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
+                main_category TEXT NOT NULL,
+                sub_category TEXT NOT NULL,
+                service_name TEXT NOT NULL,
+                variant_name TEXT NOT NULL,
                 price_cents INTEGER NOT NULL,
+                start_time TEXT,
+                duration TEXT,
+                refill_period TEXT,
+                additional_info TEXT,
                 role_id INTEGER,
                 content_payload TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -102,6 +110,81 @@ class Database:
             """
         )
         await self._connection.commit()
+        
+        # Handle migration for products table
+        await self._migrate_products_table()
+
+    async def _migrate_products_table(self) -> None:
+        """Migrate products table to new schema if needed."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Check if the products table has the new columns
+        cursor = await self._connection.execute("PRAGMA table_info(products)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        
+        # If the table has the old 'name' column but not the new columns, migrate it
+        if 'name' in columns and 'main_category' not in columns:
+            logger = __import__('logging').getLogger(__name__)
+            logger.info("Migrating products table to new schema...")
+            
+            # Create a backup of existing products
+            await self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS products_backup AS 
+                SELECT * FROM products
+                """
+            )
+            
+            # Create the new products table
+            await self._connection.execute(
+                """
+                DROP TABLE IF EXISTS products_new
+                """
+            )
+            
+            await self._connection.execute(
+                """
+                CREATE TABLE products_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    main_category TEXT NOT NULL DEFAULT 'Legacy',
+                    sub_category TEXT NOT NULL DEFAULT 'Service',
+                    service_name TEXT NOT NULL DEFAULT 'Legacy Product',
+                    variant_name TEXT NOT NULL,
+                    price_cents INTEGER NOT NULL,
+                    start_time TEXT,
+                    duration TEXT,
+                    refill_period TEXT,
+                    additional_info TEXT,
+                    role_id INTEGER,
+                    content_payload TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            
+            # Migrate data from old table to new table
+            await self._connection.execute(
+                """
+                INSERT INTO products_new (
+                    id, variant_name, price_cents, role_id, content_payload, 
+                    is_active, created_at, updated_at
+                )
+                SELECT 
+                    id, name, price_cents, role_id, content_payload,
+                    is_active, created_at, updated_at
+                FROM products
+                """
+            )
+            
+            # Drop old table and rename new one
+            await self._connection.execute("DROP TABLE products")
+            await self._connection.execute("ALTER TABLE products_new RENAME TO products")
+            
+            await self._connection.commit()
+            logger.info("Products table migration completed successfully.")
 
     async def ensure_user(self, discord_id: int) -> aiosqlite.Row:
         if self._connection is None:
@@ -169,23 +252,56 @@ class Database:
 
     async def create_product(
         self,
-        name: str,
+        *,
+        main_category: str,
+        sub_category: str,
+        service_name: str,
+        variant_name: str,
         price_cents: int,
-        role_id: Optional[int],
-        content_payload: Optional[str],
+        start_time: Optional[str] = None,
+        duration: Optional[str] = None,
+        refill_period: Optional[str] = None,
+        additional_info: Optional[str] = None,
+        role_id: Optional[int] = None,
+        content_payload: Optional[str] = None,
     ) -> int:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
 
         cursor = await self._connection.execute(
             """
-            INSERT INTO products (name, price_cents, role_id, content_payload)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO products (
+                main_category, sub_category, service_name, variant_name, 
+                price_cents, start_time, duration, refill_period, additional_info,
+                role_id, content_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, price_cents, role_id, content_payload),
+            (
+                main_category, sub_category, service_name, variant_name,
+                price_cents, start_time, duration, refill_period, additional_info,
+                role_id, content_payload
+            ),
         )
         await self._connection.commit()
         return cursor.lastrowid
+
+    async def create_product_legacy(
+        self,
+        name: str,
+        price_cents: int,
+        role_id: Optional[int],
+        content_payload: Optional[str],
+    ) -> int:
+        """Legacy method for backward compatibility."""
+        return await self.create_product(
+            main_category="Legacy",
+            sub_category="Service", 
+            service_name="Legacy Product",
+            variant_name=name,
+            price_cents=price_cents,
+            role_id=role_id,
+            content_payload=content_payload,
+        )
 
     async def get_product(self, product_id: int) -> Optional[aiosqlite.Row]:
         if self._connection is None:
@@ -262,6 +378,119 @@ class Database:
 
         cursor = await self._connection.execute(query)
         return await cursor.fetchall()
+
+    async def find_product_by_fields(
+        self,
+        *,
+        main_category: str,
+        sub_category: str,
+        service_name: str,
+        variant_name: str,
+    ) -> Optional[aiosqlite.Row]:
+        """Find a product by matching the four key fields."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM products 
+            WHERE main_category = ? 
+              AND sub_category = ? 
+              AND service_name = ? 
+              AND variant_name = ?
+            """,
+            (main_category, sub_category, service_name, variant_name),
+        )
+        return await cursor.fetchone()
+
+    async def update_product(
+        self,
+        product_id: int,
+        *,
+        main_category: Optional[str] = None,
+        sub_category: Optional[str] = None,
+        service_name: Optional[str] = None,
+        variant_name: Optional[str] = None,
+        price_cents: Optional[int] = None,
+        start_time: Optional[str] = None,
+        duration: Optional[str] = None,
+        refill_period: Optional[str] = None,
+        additional_info: Optional[str] = None,
+        role_id: Optional[int] = None,
+        content_payload: Optional[str] = None,
+        is_active: Optional[bool] = None,
+    ) -> None:
+        """Update an existing product with the provided fields."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Build dynamic update query
+        update_fields = []
+        params = []
+        
+        field_mapping = {
+            'main_category': main_category,
+            'sub_category': sub_category,
+            'service_name': service_name,
+            'variant_name': variant_name,
+            'price_cents': price_cents,
+            'start_time': start_time,
+            'duration': duration,
+            'refill_period': refill_period,
+            'additional_info': additional_info,
+            'role_id': role_id,
+            'content_payload': content_payload,
+            'is_active': 1 if is_active else 0 if is_active is not None else None,
+        }
+        
+        for field, value in field_mapping.items():
+            if value is not None:
+                update_fields.append(f"{field} = ?")
+                params.append(value)
+        
+        if not update_fields:
+            return  # Nothing to update
+        
+        # Add updated_at timestamp
+        update_fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(product_id)
+        
+        query = f"""
+            UPDATE products 
+            SET {', '.join(update_fields)}
+            WHERE id = ?
+        """
+        
+        await self._connection.execute(query, params)
+        await self._connection.commit()
+
+    async def deactivate_all_products_except(
+        self,
+        active_product_ids: list[int],
+    ) -> int:
+        """Mark all products as inactive except those in the provided list."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        if not active_product_ids:
+            # If no active products, deactivate all
+            cursor = await self._connection.execute(
+                "UPDATE products SET is_active = 0, updated_at = CURRENT_TIMESTAMP"
+            )
+        else:
+            # Deactivate all except the specified IDs
+            placeholders = ','.join('?' for _ in active_product_ids)
+            cursor = await self._connection.execute(
+                f"""
+                UPDATE products 
+                SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE id NOT IN ({placeholders})
+                """,
+                active_product_ids,
+            )
+        
+        await self._connection.commit()
+        return cursor.rowcount
 
     async def mark_client_role_assigned(self, discord_id: int) -> None:
         if self._connection is None:
