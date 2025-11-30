@@ -43,6 +43,10 @@ class ManualOrdersCog(commands.Cog):
 
     def _operating_hours_text(self) -> str:
         return render_operating_hours(self.bot.config.operating_hours)
+    
+    def _get_manual_roles(self) -> list[str]:
+        """Get list of manual role names."""
+        return [r.name for r in self.bot.config.roles if r.assignment_mode == "manual"]
     # endregion
 
     @app_commands.command(name="manual_complete", description="Complete a manual order for a user.")
@@ -120,6 +124,18 @@ class ManualOrdersCog(commands.Cog):
                     config=self.bot.config,
                     guild=interaction.guild,
                 )
+            
+            # Check and update all roles for the user
+            from apex_core.utils import check_and_update_roles
+            try:
+                await check_and_update_roles(
+                    user.id,
+                    self.bot.db,
+                    interaction.guild,
+                    self.bot.config,
+                )
+            except Exception as e:
+                logger.error("Error updating roles for user %s: %s", user.id, e)
 
             # Send confirmation to admin
             embed = create_embed(
@@ -199,6 +215,178 @@ class ManualOrdersCog(commands.Cog):
             logger.error("Error completing manual order for user %s: %s", user.id, e)
             await interaction.followup.send(
                 "An error occurred while processing the manual order. Please try again.",
+                ephemeral=True,
+            )
+
+    @app_commands.command(name="assign_role", description="Manually assign a role to a user.")
+    @app_commands.describe(
+        user="User to assign role to",
+        role_name="Name of the role to assign (must be a manual role)",
+    )
+    async def assign_role(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        role_name: str,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+
+        requester = self._resolve_member(interaction)
+        if not self._is_admin(requester):
+            await interaction.response.send_message(
+                "You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        manual_roles = self._get_manual_roles()
+        if role_name not in manual_roles:
+            await interaction.followup.send(
+                f"Role '{role_name}' is not a manual role. Available manual roles: {', '.join(manual_roles)}",
+                ephemeral=True,
+            )
+            return
+
+        # Find the role config
+        role_config = None
+        for role in self.bot.config.roles:
+            if role.name == role_name:
+                role_config = role
+                break
+
+        if not role_config:
+            await interaction.followup.send(
+                f"Role '{role_name}' not found in configuration.", ephemeral=True
+            )
+            return
+
+        try:
+            # Add to database
+            await self.bot.db.ensure_user(user.id)
+            await self.bot.db.add_manually_assigned_role(user.id, role_name)
+
+            # Assign Discord role
+            discord_role = interaction.guild.get_role(role_config.role_id)
+            if discord_role:
+                await user.add_roles(discord_role, reason=f"Manual role assignment by {requester.name}")
+
+            # Send confirmation
+            embed = create_embed(
+                title="Role Assigned",
+                description=(
+                    f"**User:** {user.mention} ({user.id})\n"
+                    f"**Role:** {role_name}\n"
+                    f"**Assigned By:** {requester.mention}\n"
+                    f"**Benefits:** {', '.join(role_config.benefits) if role_config.benefits else 'None listed'}"
+                ),
+                color=discord.Color.green(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            # Notify user
+            user_embed = create_embed(
+                title=f"🎉 {role_name} Assigned!",
+                description=(
+                    f"You have been assigned the **{role_name}** role!\n\n"
+                    f"**Benefits:**\n"
+                    + "\n".join(f"• {b}" for b in role_config.benefits if role_config.benefits)
+                    + f"\n\n**Discount:** {role_config.discount_percent:.2f}% off purchases"
+                ),
+                color=discord.Color.gold(),
+            )
+            try:
+                await user.send(embed=user_embed)
+            except discord.Forbidden:
+                logger.warning("Could not DM user %s about role assignment", user.id)
+
+        except Exception as e:
+            logger.error("Error assigning role to user %s: %s", user.id, e)
+            await interaction.followup.send(
+                "An error occurred while assigning the role. Please try again.",
+                ephemeral=True,
+            )
+
+    @app_commands.command(name="remove_role", description="Manually remove a role from a user.")
+    @app_commands.describe(
+        user="User to remove role from",
+        role_name="Name of the role to remove",
+    )
+    async def remove_role(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        role_name: str,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+
+        requester = self._resolve_member(interaction)
+        if not self._is_admin(requester):
+            await interaction.response.send_message(
+                "You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Find the role config
+        role_config = None
+        for role in self.bot.config.roles:
+            if role.name == role_name:
+                role_config = role
+                break
+
+        if not role_config:
+            await interaction.followup.send(
+                f"Role '{role_name}' not found in configuration.", ephemeral=True
+            )
+            return
+
+        try:
+            # Remove from database if manual
+            if role_config.assignment_mode == "manual":
+                await self.bot.db.remove_manually_assigned_role(user.id, role_name)
+
+            # Remove Discord role
+            discord_role = interaction.guild.get_role(role_config.role_id)
+            if discord_role and discord_role in user.roles:
+                await user.remove_roles(discord_role, reason=f"Manual role removal by {requester.name}")
+
+            # Send confirmation
+            embed = create_embed(
+                title="Role Removed",
+                description=(
+                    f"**User:** {user.mention} ({user.id})\n"
+                    f"**Role:** {role_name}\n"
+                    f"**Removed By:** {requester.mention}"
+                ),
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            # Notify user
+            user_embed = create_embed(
+                title=f"Role Removed",
+                description=f"The **{role_name}** role has been removed from your account.",
+                color=discord.Color.orange(),
+            )
+            try:
+                await user.send(embed=user_embed)
+            except discord.Forbidden:
+                logger.warning("Could not DM user %s about role removal", user.id)
+
+        except Exception as e:
+            logger.error("Error removing role from user %s: %s", user.id, e)
+            await interaction.followup.send(
+                "An error occurred while removing the role. Please try again.",
                 ephemeral=True,
             )
 

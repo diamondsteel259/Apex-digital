@@ -224,15 +224,20 @@ class StorefrontCog(commands.Cog):
     async def _calculate_discount(
         self, user_id: int, product_id: int, vip_tier: Optional[object]
     ) -> float:
+        from apex_core.utils.roles import get_user_roles
+        
         total_discount = 0.0
 
-        vip_tier_name = vip_tier.name if vip_tier else None
-        if vip_tier_name:
-            total_discount = 10.0
+        # Check all applicable roles for discounts
+        user_roles = await get_user_roles(user_id, self.bot.db, self.bot.config)
+        for role in user_roles:
+            total_discount = max(total_discount, role.discount_percent)
 
+        # Check legacy discount system
         user_row = await self.bot.db.get_user(user_id)
         db_user_id = user_row["id"] if user_row else None
 
+        vip_tier_name = vip_tier.name if vip_tier else None
         discounts = await self.bot.db.get_applicable_discounts(
             user_id=db_user_id,
             product_id=product_id,
@@ -446,6 +451,19 @@ class StorefrontCog(commands.Cog):
                 config=self.bot.config,
                 guild=interaction.guild,
             )
+        
+        # Check and update all roles for the user
+        if interaction.guild:
+            from apex_core.utils import check_and_update_roles
+            try:
+                await check_and_update_roles(
+                    interaction.user.id,
+                    self.bot.db,
+                    interaction.guild,
+                    self.bot.config,
+                )
+            except Exception as e:
+                logger.error("Error updating roles for user %s: %s", interaction.user.id, e)
 
     async def _handle_support_ticket(
         self, interaction: discord.Interaction, product_id: int

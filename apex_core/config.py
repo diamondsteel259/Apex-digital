@@ -97,17 +97,21 @@ def _parse_payment_methods(payload: Iterable[dict[str, Any]]) -> list[PaymentMet
     return methods
 
 
-def _parse_vip_thresholds(payload: Iterable[dict[str, Any]]) -> list[VipTier]:
-    tiers: list[VipTier] = []
+def _parse_roles(payload: Iterable[dict[str, Any]]) -> list[Role]:
+    roles: list[Role] = []
     for item in payload:
-        tiers.append(
-            VipTier(
+        roles.append(
+            Role(
                 name=item["name"],
-                min_spend_cents=int(item["min_spend_cents"]),
+                role_id=int(item["role_id"]),
+                assignment_mode=item["assignment_mode"],
+                unlock_condition=item["unlock_condition"] if isinstance(item["unlock_condition"], str) else int(item["unlock_condition"]),
                 discount_percent=float(item["discount_percent"]),
+                benefits=item.get("benefits", []),
+                tier_priority=int(item.get("tier_priority", 0)),
             )
         )
-    return tiers
+    return roles
 
 
 def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
@@ -130,7 +134,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         ticket_categories=TicketCategories(**data["ticket_categories"]),
         operating_hours=_parse_operating_hours(data["operating_hours"]),
         payment_methods=_parse_payment_methods(data.get("payment_methods", [])),
-        vip_thresholds=_parse_vip_thresholds(data.get("vip_thresholds", [])),
+        roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),
     )

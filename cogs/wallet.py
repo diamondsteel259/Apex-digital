@@ -289,6 +289,17 @@ class WalletCog(commands.Cog):
             )
             return
 
+        from apex_core.utils import get_user_roles
+        
+        user_roles = await self.bot.db.get_manually_assigned_roles(target.id)
+        highest_auto_role = None
+        if interaction.guild:
+            roles = await get_user_roles(target.id, self.bot.db, self.bot.config)
+            # Get highest priority automatic role
+            auto_roles = [r for r in roles if r.assignment_mode != "manual"]
+            if auto_roles:
+                highest_auto_role = min(auto_roles, key=lambda r: r.tier_priority)
+
         embed = create_embed(
             title=f"Wallet Balance • {target.display_name}",
             color=discord.Color.gold(),
@@ -303,8 +314,8 @@ class WalletCog(commands.Cog):
             value=format_usd(user_row["total_lifetime_spent_cents"]),
             inline=True,
         )
-        vip_value = user_row["vip_tier"].title() if user_row["vip_tier"] else "None"
-        embed.add_field(name="VIP Tier", value=vip_value, inline=True)
+        role_value = highest_auto_role.name if highest_auto_role else "None"
+        embed.add_field(name="Highest Rank", value=role_value, inline=True)
         embed.add_field(name="Operating Hours", value=self._operating_hours_text(), inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
