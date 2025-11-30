@@ -379,6 +379,56 @@ class Database:
         cursor = await self._connection.execute(query)
         return await cursor.fetchall()
 
+    async def get_distinct_main_categories(self) -> list[str]:
+        """Get all distinct main_category values from active products, sorted alphabetically."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT DISTINCT main_category 
+            FROM products 
+            WHERE is_active = 1 
+            ORDER BY main_category ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+    async def get_distinct_sub_categories(self, main_category: str) -> list[str]:
+        """Get all distinct sub_category values for a main_category from active products, sorted alphabetically."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT DISTINCT sub_category 
+            FROM products 
+            WHERE main_category = ? AND is_active = 1 
+            ORDER BY sub_category ASC
+            """,
+            (main_category,),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+    async def get_products_by_category(
+        self, main_category: str, sub_category: str
+    ) -> list[aiosqlite.Row]:
+        """Get all active products for a specific main_category and sub_category combination."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM products 
+            WHERE main_category = ? AND sub_category = ? AND is_active = 1 
+            ORDER BY service_name ASC, variant_name ASC
+            """,
+            (main_category, sub_category),
+        )
+        return await cursor.fetchall()
+
     async def find_product_by_fields(
         self,
         *,
