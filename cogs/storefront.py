@@ -72,8 +72,11 @@ class ProductSelect(discord.ui.Select["ProductSelectView"]):
         )
         final_price_cents = int(base_price_cents * (1 - discount_percent / 100))
 
+        # Use variant_name for new products, fallback to name for legacy products
+        product_name = product.get("variant_name", product.get("name", "Unknown Product"))
+        
         embed = create_embed(
-            title=product["name"],
+            title=product_name,
             description=f"**Base Price:** {format_usd(base_price_cents)}\n"
             f"**Your Discount:** {discount_percent:.1f}%\n"
             f"**Final Price:** {format_usd(final_price_cents)}",
@@ -98,7 +101,7 @@ class ProductSelectView(discord.ui.View):
         if products:
             select.options = [
                 discord.SelectOption(
-                    label=product["name"][:100],
+                    label=product.get("variant_name", product.get("name", "Unknown Product"))[:100],
                     value=str(product["id"]),
                     description=f"{format_usd(product['price_cents'])} • ID: {product['id']}"[:100],
                 )
@@ -157,7 +160,7 @@ class ProductActionView(discord.ui.View):
 
 class PurchaseConfirmModal(discord.ui.Modal):
     def __init__(self, product_id: int, product_name: str, final_price_cents: int) -> None:
-        super().__init__(title=f"Confirm Purchase: {product_name}")
+        super().__init__(title=f"Confirm Purchase: {product_name[:50]}")  # Truncate for title limit
         self.product_id = product_id
         self.product_name = product_name
         self.final_price_cents = final_price_cents
@@ -292,7 +295,8 @@ class StorefrontCog(commands.Cog):
             )
             return
 
-        modal = PurchaseConfirmModal(product_id, product["name"], final_price_cents)
+        product_name = product.get("variant_name", product.get("name", "Unknown Product"))
+        modal = PurchaseConfirmModal(product_id, product_name, final_price_cents)
         await interaction.response.send_modal(modal)
 
     async def _complete_purchase(
@@ -341,9 +345,10 @@ class StorefrontCog(commands.Cog):
             )
             return
 
+        product_name = product.get("variant_name", product.get("name", "Unknown Product"))
         try:
             order_metadata = json.dumps({
-                "product_name": product["name"],
+                "product_name": product_name,
                 "base_price_cents": product["price_cents"],
                 "discount_percent": discount_percent,
                 "vip_tier": vip_tier.name if vip_tier else None,
@@ -380,7 +385,7 @@ class StorefrontCog(commands.Cog):
         success_embed = create_embed(
             title="Purchase Complete!",
             description=(
-                f"You have successfully purchased **{product['name']}**.\n\n"
+                f"You have successfully purchased **{product_name}**.\n\n"
                 f"**Amount Paid:** {format_usd(final_price_cents)}\n"
                 f"**New Balance:** {format_usd(new_balance)}\n"
                 f"**Order ID:** #{order_id}"
@@ -391,7 +396,7 @@ class StorefrontCog(commands.Cog):
 
         if product["content_payload"]:
             dm_embed = create_embed(
-                title=f"Product Fulfillment: {product['name']}",
+                title=f"Product Fulfillment: {product_name}",
                 description=product["content_payload"],
                 color=discord.Color.gold(),
             )
@@ -419,7 +424,7 @@ class StorefrontCog(commands.Cog):
                     title="Order Completed",
                     description=(
                         f"**Customer:** {interaction.user.mention} ({interaction.user.id})\n"
-                        f"**Product:** {product['name']}\n"
+                        f"**Product:** {product_name}\n"
                         f"**Base Price:** {format_usd(product['price_cents'])}\n"
                         f"**Discount Applied:** {discount_percent:.1f}%\n"
                         f"**Final Price:** {format_usd(final_price_cents)}\n"
@@ -559,11 +564,12 @@ class StorefrontCog(commands.Cog):
             )
             return
 
+        product_name = product.get("variant_name", product.get("name", "Unknown Product"))
         embed = create_embed(
             title="Support Ticket",
             description=(
                 f"{member.mention}, thanks for opening a support ticket.\n\n"
-                f"**Product Inquiry:** {product['name']}\n"
+                f"**Product Inquiry:** {product_name}\n"
                 f"**Price:** {format_usd(product['price_cents'])}\n\n"
                 "Our team will assist you shortly."
             ),
