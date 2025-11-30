@@ -1,0 +1,72 @@
+{
+  "token": "YOUR_DISCORD_BOT_TOKEN_HERE",
+  "bot_prefix": "!",
+  "guild_ids": [
+    123456789012345678,
+    987654321098765432
+  ],
+  "role_ids": {
+    "admin": 123456789012345678,
+    "vip_tier1": 223456789012345678,
+    "vip_tier2": 323456789012345678,
+    "vip_tier3": 423456789012345678
+  },
+  "ticket_categories": {
+    "support": 111111111111111111,
+    "billing": 222222222222222222,
+    "sales": 333333333333333333
+  },
+  "operating_hours": {
+    "start_hour_utc": 10,
+    "end_hour_utc": 22
+  },
+  "payment_methods": [
+    {
+      "name": "PayPal",
+      "instructions": "Send payment to paypal@example.com with your Discord username in the notes",
+      "emoji": "💸",
+      "metadata": {
+        "email": "paypal@example.com"
+      }
+    },
+    {
+      "name": "Crypto (BTC)",
+      "instructions": "Contact an admin for the current wallet address",
+      "emoji": "₿",
+      "metadata": {
+        "network": "Bitcoin"
+      }
+    },
+    {
+      "name": "Crypto (ETH)",
+      "instructions": "Contact an admin for the current wallet address",
+      "emoji": "Ξ",
+      "metadata": {
+        "network": "Ethereum"
+      }
+    }
+  ],
+  "vip_thresholds": [
+    {
+      "name": "tier1",
+      "min_spend_cents": 5000,
+      "discount_percent": 5.0
+    },
+    {
+      "name": "tier2",
+      "min_spend_cents": 15000,
+      "discount_percent": 10.0
+    },
+    {
+      "name": "tier3",
+      "min_spend_cents": 30000,
+      "discount_percent": 15.0
+    }
+  ],
+  "logging_channels": {
+    "audit": 444444444444444444,
+    "payments": 555555555555555555,
+    "tickets": 666666666666666666,
+    "errors": 777777777777777777
+  }
+}
