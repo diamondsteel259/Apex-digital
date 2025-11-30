@@ -83,6 +83,21 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_tickets_user_status
                 ON tickets(user_discord_id, status);
+
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                price_paid_cents INTEGER NOT NULL,
+                discount_applied_percent REAL NOT NULL DEFAULT 0,
+                order_metadata TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_orders_user
+                ON orders(user_discord_id);
             """
         )
         await self._connection.commit()
@@ -336,3 +351,101 @@ class Database:
             (channel_id,),
         )
         await self._connection.commit()
+
+    async def create_order(
+        self,
+        *,
+        user_discord_id: int,
+        product_id: int,
+        price_paid_cents: int,
+        discount_applied_percent: float,
+        order_metadata: Optional[str] = None,
+    ) -> int:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO orders (
+                user_discord_id, product_id, price_paid_cents, 
+                discount_applied_percent, order_metadata
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                user_discord_id,
+                product_id,
+                price_paid_cents,
+                discount_applied_percent,
+                order_metadata,
+            ),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def purchase_product(
+        self,
+        *,
+        user_discord_id: int,
+        product_id: int,
+        price_paid_cents: int,
+        discount_applied_percent: float,
+        order_metadata: Optional[str] = None,
+    ) -> tuple[int, int]:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            cursor = await self._connection.execute(
+                "SELECT wallet_balance_cents FROM users WHERE discord_id = ?",
+                (user_discord_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                await self._connection.rollback()
+                raise ValueError("User not found")
+            
+            current_balance = row["wallet_balance_cents"]
+            if current_balance < price_paid_cents:
+                await self._connection.rollback()
+                raise ValueError("Insufficient balance")
+            
+            await self._connection.execute(
+                """
+                UPDATE users
+                SET wallet_balance_cents = wallet_balance_cents - ?,
+                    total_lifetime_spent_cents = total_lifetime_spent_cents + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE discord_id = ?
+                """,
+                (price_paid_cents, price_paid_cents, user_discord_id),
+            )
+            
+            cursor = await self._connection.execute(
+                """
+                INSERT INTO orders (
+                    user_discord_id, product_id, price_paid_cents,
+                    discount_applied_percent, order_metadata
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user_discord_id,
+                    product_id,
+                    price_paid_cents,
+                    discount_applied_percent,
+                    order_metadata,
+                ),
+            )
+            order_id = cursor.lastrowid
+            
+            await self._connection.commit()
+            
+            cursor = await self._connection.execute(
+                "SELECT wallet_balance_cents FROM users WHERE discord_id = ?",
+                (user_discord_id,),
+            )
+            row = await cursor.fetchone()
+            new_balance = row["wallet_balance_cents"] if row else 0
+            
+            return order_id, new_balance
