@@ -114,6 +114,45 @@ apex-core/
 - `is_stackable`: Whether discount can stack with others
 - `created_at`: Discount creation timestamp
 
+## Product Management
+
+### Using the Products Template
+
+A professional Excel template (`products_template.xlsx`) is provided for easy bulk product management:
+
+1. **Open the template**: The file contains three sheets:
+   - **Products**: Main data entry sheet with example rows
+   - **Instructions**: Step-by-step guide for using the template
+   - **Column Guide**: Detailed explanations of each field
+
+2. **Add your products**: Follow the example format:
+   - Delete example rows (keep headers)
+   - Fill in your product data
+   - Categories: Instagram, YouTube, TikTok, Xbox, ChatGPT, etc.
+   - Sub-categories: Followers, Likes, Views, Subscriptions, etc.
+   - Price in USD (e.g., 10.99 for $10.99)
+
+3. **Export to CSV**:
+   - File → Save As → CSV (Comma delimited)
+   - Only the Products sheet will be exported
+
+4. **Import to Discord**:
+   - Use the `/import_products` command (admin-only)
+   - Attach your CSV file
+   - Products will be automatically added to the database
+
+### Template Fields
+
+- **Main_Category**: Platform (Instagram, YouTube, TikTok, etc.)
+- **Sub_Category**: Service type (Followers, Likes, Subscribers, etc.)
+- **Service_Name**: Grouping name (e.g., "Instagram Services")
+- **Variant_Name**: Display name (e.g., "1000 Followers")
+- **Price_USD**: Price in dollars (converted to cents internally)
+- **Start_Time**: Delivery start time (e.g., "10-25min", "1-3hr")
+- **Duration**: Delivery duration (e.g., "100min", "72hr", "N/A")
+- **Refill_Period**: Guarantee period (e.g., "30 day", "No refill")
+- **Additional_Info**: Extra notes or requirements
+
 ## Development
 
 ### Adding New Cogs
