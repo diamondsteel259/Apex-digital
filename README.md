@@ -7,6 +7,7 @@ A feature-rich Discord bot for automated product distribution, ticketing, and VI
 - **Automated Product Distribution**: SQLite-backed product catalog with role assignments and content delivery
 - **VIP System**: Multi-tier VIP system with automatic discount application
 - **Wallet System**: Internal wallet with transaction tracking and lifetime spending
+- **Ticket Lifecycle Automation**: Automatic ticket closure with inactivity warnings and HTML transcript export
 - **Operating Hours**: Configurable business hours with Discord timestamp formatting
 - **Payment Methods**: Flexible payment method configuration with custom instructions
 - **Logging**: Comprehensive logging channels for audit, payments, tickets, and errors
@@ -43,6 +44,8 @@ A feature-rich Discord bot for automated product distribution, ticketing, and VI
    python bot.py
    ```
 
+   > **Tip:** Set `CONFIG_PATH` and `DISCORD_TOKEN` environment variables to override the default configuration file path and token.
+
 ## Configuration
 
 The `config.json` file contains all bot settings:
@@ -55,7 +58,7 @@ The `config.json` file contains all bot settings:
 - **operating_hours**: Start and end hours in UTC (24-hour format)
 - **payment_methods**: List of accepted payment methods with instructions and metadata
 - **vip_thresholds**: Spending thresholds for VIP tiers (in cents) and discount percentages
-- **logging_channels**: Channel IDs for logging audit, payments, tickets, and errors
+- **logging_channels**: Channel IDs for logging audit, payments, tickets, errors, and optional transcript archives
 
 ## Project Structure
 
@@ -165,6 +168,105 @@ product_id = await self.bot.db.create_product(
     role_id=123456789,
     content_payload="https://example.com/content"
 )
+```
+
+## Production Deployment
+
+### Systemd Service (Ubuntu/Debian)
+
+The bot includes a systemd service unit for production deployment on Ubuntu and other systemd-based distributions.
+
+#### Installation Steps
+
+1. **Set up the bot directory**:
+   ```bash
+   sudo mkdir -p /opt/apex-core
+   sudo cp -r * /opt/apex-core/
+   ```
+
+2. **Create a virtual environment and install dependencies**:
+   ```bash
+   cd /opt/apex-core
+   sudo python3 -m venv venv
+   sudo venv/bin/pip install -r requirements.txt
+   ```
+
+3. **Create a dedicated system user**:
+   ```bash
+   sudo useradd -r -s /bin/false apexcore
+   sudo chown -R apexcore:apexcore /opt/apex-core
+   ```
+
+4. **Create environment file**:
+   ```bash
+   sudo mkdir -p /etc/apex-core
+   sudo nano /etc/apex-core/environment
+   ```
+   
+   Add the following:
+   ```
+   DISCORD_TOKEN=your_bot_token_here
+   CONFIG_PATH=/opt/apex-core/config.json
+   ```
+
+5. **Install and enable the service**:
+   ```bash
+   sudo cp apex-core.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable apex-core.service
+   sudo systemctl start apex-core.service
+   ```
+
+6. **Verify the service is running**:
+   ```bash
+   sudo systemctl status apex-core.service
+   ```
+
+7. **View logs**:
+   ```bash
+   sudo journalctl -u apex-core.service -f
+   ```
+
+#### Service Management
+
+- **Start the bot**: `sudo systemctl start apex-core.service`
+- **Stop the bot**: `sudo systemctl stop apex-core.service`
+- **Restart the bot**: `sudo systemctl restart apex-core.service`
+- **Check status**: `sudo systemctl status apex-core.service`
+- **Disable auto-start**: `sudo systemctl disable apex-core.service`
+
+#### Updating the Bot
+
+```bash
+cd /opt/apex-core
+sudo -u apexcore git pull
+sudo -u apexcore venv/bin/pip install -r requirements.txt
+sudo systemctl restart apex-core.service
+```
+
+## Ticket Lifecycle Automation
+
+The bot includes automatic ticket management with the following features:
+
+- **Inactivity Warnings**: Tickets inactive for 48 hours receive an automatic warning with a countdown timestamp
+- **Auto-Closure**: Tickets inactive for 49 hours are automatically closed
+- **HTML Transcripts**: Complete chat history exported as HTML using chat-exporter
+- **Transcript Delivery**: Transcripts sent via DM to ticket opener and logged to configured channels
+- **Operating Hours Integration**: Warnings include staff availability information
+
+### Configuration
+
+Add the optional `transcript_archive` channel to your `logging_channels` configuration:
+
+```json
+"logging_channels": {
+  "audit": 123456789012345678,
+  "payments": 123456789012345678,
+  "tickets": 123456789012345678,
+  "errors": 123456789012345678,
+  "order_logs": 123456789012345678,
+  "transcript_archive": 123456789012345678
+}
 ```
 
 ## License

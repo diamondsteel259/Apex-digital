@@ -6,7 +6,9 @@ This is the main entrypoint for the bot.
 
 import asyncio
 import logging
+import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import discord
@@ -73,11 +75,18 @@ class ApexCoreBot(commands.Bot):
 
 
 async def main():
+    config_path = os.environ.get("CONFIG_PATH", "config.json")
+    token = os.environ.get("DISCORD_TOKEN")
+    
     try:
-        config = load_config()
+        config = load_config(config_path)
     except FileNotFoundError as e:
         logger.error(str(e))
         sys.exit(1)
+
+    if token:
+        config = replace(config, token=token)
+        logger.info("Using token from environment variable")
 
     intents = discord.Intents.default()
     intents.message_content = True

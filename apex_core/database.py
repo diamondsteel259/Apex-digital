@@ -323,19 +323,31 @@ class Database:
         )
         return await cursor.fetchone()
 
-    async def update_ticket_status(self, channel_id: int, status: str) -> None:
+    async def update_ticket_status(
+        self, channel_id: int, status: str, *, update_activity: bool = False
+    ) -> None:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
 
-        await self._connection.execute(
-            """
-            UPDATE tickets
-            SET status = ?,
-                last_activity = CURRENT_TIMESTAMP
-            WHERE channel_id = ?
-            """,
-            (status, channel_id),
-        )
+        if update_activity:
+            await self._connection.execute(
+                """
+                UPDATE tickets
+                SET status = ?,
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE channel_id = ?
+                """,
+                (status, channel_id),
+            )
+        else:
+            await self._connection.execute(
+                """
+                UPDATE tickets
+                SET status = ?
+                WHERE channel_id = ?
+                """,
+                (status, channel_id),
+            )
         await self._connection.commit()
 
     async def touch_ticket_activity(self, channel_id: int) -> None:
@@ -351,6 +363,20 @@ class Database:
             (channel_id,),
         )
         await self._connection.commit()
+
+    async def get_open_tickets(self) -> list[aiosqlite.Row]:
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT *
+            FROM tickets
+            WHERE status = 'open'
+            ORDER BY last_activity ASC
+            """
+        )
+        return await cursor.fetchall()
 
     async def create_order(
         self,
