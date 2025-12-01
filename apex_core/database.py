@@ -2316,3 +2316,122 @@ class Database:
         )
         row = await cursor.fetchone()
         return row["referrer_user_id"] if row else None
+
+    async def get_all_pending_referral_cashbacks(self) -> list[dict]:
+        """Get all referrers with pending cashback (earned > paid), grouped by referrer.
+        
+        Returns:
+            List of dicts with referrer_id, pending_cents, referral_count
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                referrer_user_id,
+                COUNT(*) as referral_count,
+                SUM(cashback_earned_cents - cashback_paid_cents) as pending_cents
+            FROM referrals
+            WHERE is_blacklisted = 0
+              AND (cashback_earned_cents - cashback_paid_cents) > 0
+            GROUP BY referrer_user_id
+            HAVING pending_cents > 0
+            ORDER BY pending_cents DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                "referrer_id": row["referrer_user_id"],
+                "pending_cents": row["pending_cents"],
+                "referral_count": row["referral_count"],
+            }
+            for row in rows
+        ]
+
+    async def get_pending_cashback_for_user(self, referrer_id: int) -> dict:
+        """Get pending cashback details for a specific referrer.
+        
+        Args:
+            referrer_id: Discord ID of the referrer
+            
+        Returns:
+            Dict with pending_cents, referral_count, is_blacklisted, referral_details
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Get aggregated stats
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                COUNT(*) as referral_count,
+                SUM(cashback_earned_cents - cashback_paid_cents) as pending_cents,
+                MAX(is_blacklisted) as is_blacklisted
+            FROM referrals
+            WHERE referrer_user_id = ?
+              AND (cashback_earned_cents - cashback_paid_cents) > 0
+            """,
+            (referrer_id,),
+        )
+        row = await cursor.fetchone()
+        
+        if not row or row["pending_cents"] is None or row["pending_cents"] <= 0:
+            return {
+                "pending_cents": 0,
+                "referral_count": 0,
+                "is_blacklisted": False,
+                "referral_details": [],
+            }
+        
+        # Get individual referral details
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                referred_user_id,
+                cashback_earned_cents - cashback_paid_cents as pending_cents
+            FROM referrals
+            WHERE referrer_user_id = ?
+              AND is_blacklisted = 0
+              AND (cashback_earned_cents - cashback_paid_cents) > 0
+            """,
+            (referrer_id,),
+        )
+        referral_details = await cursor.fetchall()
+        
+        return {
+            "pending_cents": row["pending_cents"],
+            "referral_count": row["referral_count"],
+            "is_blacklisted": bool(row["is_blacklisted"]),
+            "referral_details": [
+                {
+                    "user_id": r["referred_user_id"],
+                    "amount_cents": r["pending_cents"],
+                }
+                for r in referral_details
+            ],
+        }
+
+    async def mark_cashback_paid(self, referrer_id: int, amount_cents: int) -> None:
+        """Update referrals table to mark cashback as paid for a referrer.
+        
+        Args:
+            referrer_id: Discord ID of the referrer
+            amount_cents: Amount being paid out
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            UPDATE referrals
+            SET cashback_paid_cents = cashback_earned_cents
+            WHERE referrer_user_id = ?
+              AND is_blacklisted = 0
+              AND (cashback_earned_cents - cashback_paid_cents) > 0
+            """,
+            (referrer_id,),
+        )
+        await self._connection.commit()
