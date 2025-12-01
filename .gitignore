@@ -44,7 +44,8 @@ transcripts/
 
 # Configuration
 config.json
-config/payments.json
+# Note: config/payments.json is tracked in git as it contains example configuration
+# Create config/payments.local.json for local overrides if needed
 
 # Environment
 .env
