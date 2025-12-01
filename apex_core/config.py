@@ -33,6 +33,13 @@ class PaymentSettings:
 
 
 @dataclass(frozen=True)
+class RefundSettings:
+    enabled: bool
+    max_days: int
+    handling_fee_percent: float
+
+
+@dataclass(frozen=True)
 class VipTier:
     name: str
     min_spend_cents: int
@@ -82,6 +89,7 @@ class Config:
     payment_methods: list[PaymentMethod]
     logging_channels: LoggingChannels
     payment_settings: PaymentSettings | None = None
+    refund_settings: RefundSettings | None = None
     roles: list[Role] = field(default_factory=list)
     vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
@@ -134,6 +142,18 @@ def _parse_roles(payload: Iterable[dict[str, Any]]) -> list[Role]:
             )
         )
     return roles
+
+
+def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | None:
+    """Parse refund settings from config payload."""
+    if not payload:
+        return None
+    
+    return RefundSettings(
+        enabled=bool(payload.get("enabled", True)),
+        max_days=int(payload.get("max_days", 3)),
+        handling_fee_percent=float(payload.get("handling_fee_percent", 10.0)),
+    )
 
 
 def _validate_order_confirmation_template(template: str) -> None:
@@ -217,6 +237,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         operating_hours=_parse_operating_hours(data["operating_hours"]),
         payment_methods=_parse_payment_methods(data.get("payment_methods", [])),
         payment_settings=payment_settings,
+        refund_settings=_parse_refund_settings(data.get("refund_settings")),
         roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),

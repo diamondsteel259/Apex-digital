@@ -126,5 +126,10 @@
     "errors": 777777777777777777,
     "order_logs": 888888888888888888,
     "transcript_archive": 999999999999999999
+  },
+  "refund_settings": {
+    "enabled": true,
+    "max_days": 3,
+    "handling_fee_percent": 10.0
   }
 }

@@ -271,9 +271,14 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
             admin_role_id = bot.config.role_ids.admin
             admin_role = interaction.guild.get_role(admin_role_id)
             
+            # Get refund settings
+            refund_settings = getattr(bot.config, 'refund_settings', None)
+            max_days = refund_settings.max_days if refund_settings else 3
+            handling_fee = refund_settings.handling_fee_percent if refund_settings else 10.0
+            
             embed = create_embed(
-                title="🛡️ Refund Request Ticket",
-                description=f"{interaction.user.mention} opened a refund request ticket.\n\n**Reason:** {self.reason.value}",
+                title="🛡️ Refund Policy",
+                description=f"Refunds accepted within {max_days} days of order completion | {handling_fee}% handling fee applied | Information verification required",
                 color=discord.Color.orange(),
                 timestamp=True,
             )
@@ -281,8 +286,15 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
             embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
             embed.add_field(name="Priority", value="High", inline=True)
             embed.add_field(
-                name="Refund Policy",
-                value="Our staff will review your refund request and respond within 24 hours during operating hours.",
+                name="Refund Reason",
+                value=self.reason.value,
+                inline=False,
+            )
+            embed.add_field(
+                name="Next Steps",
+                value="1. Use `/submitrefund` to submit your formal refund request\n"
+                       "2. Staff will review and approve/reject within 24 hours\n"
+                       "3. Approved refunds will be credited to your wallet minus handling fee",
                 inline=False,
             )
             embed.add_field(

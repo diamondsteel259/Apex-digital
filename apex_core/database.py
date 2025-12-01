@@ -19,7 +19,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 8
+        self.target_schema_version = 9
 
     async def connect(self) -> None:
         if self._connection is None:
@@ -88,6 +88,7 @@ class Database:
             6: ("extend_orders_schema", self._migration_v6),
             7: ("transcripts_table", self._migration_v7),
             8: ("ticket_counter_table", self._migration_v8),
+            9: ("refunds_table", self._migration_v9),
         }
 
         for version in sorted(migrations.keys()):
@@ -462,6 +463,57 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_ticket_counter_user_type
                 ON ticket_counter(user_id, ticket_type)
+            """
+        )
+
+        await self._connection.commit()
+
+    async def _migration_v9(self) -> None:
+        """Migration v9: Create refunds table for refund management and approval workflow."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS refunds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                user_discord_id INTEGER NOT NULL,
+                requested_amount_cents INTEGER NOT NULL,
+                handling_fee_cents INTEGER NOT NULL,
+                final_refund_cents INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                proof_attachment_url TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP,
+                resolved_by_staff_id INTEGER,
+                rejection_reason TEXT,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(resolved_by_staff_id) REFERENCES users(discord_id) ON DELETE SET NULL
+            )
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_refunds_order
+                ON refunds(order_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_refunds_user
+                ON refunds(user_discord_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_refunds_status
+                ON refunds(status)
             """
         )
 
@@ -1750,3 +1802,227 @@ class Database:
             (user_discord_id,),
         )
         return await cursor.fetchall()
+
+    # Refund Management Methods
+    
+    async def create_refund_request(
+        self,
+        order_id: int,
+        user_discord_id: int,
+        amount_cents: int,
+        reason: str,
+        proof_attachment_url: Optional[str] = None,
+        handling_fee_percent: float = 10.0,
+    ) -> int:
+        """Create a refund request with calculated handling fee."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        handling_fee_cents = int(amount_cents * handling_fee_percent / 100)
+        final_refund_cents = amount_cents - handling_fee_cents
+
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO refunds (
+                order_id, user_discord_id, requested_amount_cents,
+                handling_fee_cents, final_refund_cents, reason,
+                proof_attachment_url, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                order_id,
+                user_discord_id,
+                amount_cents,
+                handling_fee_cents,
+                final_refund_cents,
+                reason,
+                proof_attachment_url,
+            ),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def approve_refund(
+        self,
+        refund_id: int,
+        staff_discord_id: int,
+        approved_amount_cents: Optional[int] = None,
+        handling_fee_percent: float = 10.0,
+    ) -> None:
+        """Approve a refund and credit user wallet."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute("BEGIN IMMEDIATE;")
+
+        try:
+            # Get refund details
+            cursor = await self._connection.execute(
+                "SELECT * FROM refunds WHERE id = ? AND status = 'pending'",
+                (refund_id,),
+            )
+            refund_row = await cursor.fetchone()
+            if not refund_row:
+                await self._connection.rollback()
+                raise ValueError("Refund not found or already processed")
+
+            # Use approved amount or original requested amount
+            final_amount_cents = approved_amount_cents or refund_row["requested_amount_cents"]
+            handling_fee_cents = int(final_amount_cents * handling_fee_percent / 100)
+            final_refund_cents = final_amount_cents - handling_fee_cents
+
+            # Update refund status
+            await self._connection.execute(
+                """
+                UPDATE refunds 
+                SET status = 'approved',
+                    resolved_at = CURRENT_TIMESTAMP,
+                    resolved_by_staff_id = ?,
+                    handling_fee_cents = ?,
+                    final_refund_cents = ?
+                WHERE id = ?
+                """,
+                (staff_discord_id, handling_fee_cents, final_refund_cents, refund_id),
+            )
+
+            # Credit user wallet
+            await self.update_wallet_balance(refund_row["user_discord_id"], final_refund_cents)
+
+            # Get updated balance for transaction log
+            cursor = await self._connection.execute(
+                "SELECT wallet_balance_cents FROM users WHERE discord_id = ?",
+                (refund_row["user_discord_id"],),
+            )
+            user_row = await cursor.fetchone()
+            balance_after = user_row["wallet_balance_cents"] if user_row else 0
+
+            # Log transaction
+            await self.log_wallet_transaction(
+                user_discord_id=refund_row["user_discord_id"],
+                amount_cents=final_refund_cents,
+                balance_after_cents=balance_after,
+                transaction_type="refund",
+                description=f"Refund for order #{refund_row['order_id']}",
+                order_id=refund_row["order_id"],
+                staff_discord_id=staff_discord_id,
+                metadata=f'{{"refund_id": {refund_id}, "handling_fee_cents": {handling_fee_cents}}}',
+            )
+
+            await self._connection.commit()
+        except Exception:
+            await self._connection.rollback()
+            raise
+
+    async def reject_refund(
+        self,
+        refund_id: int,
+        staff_discord_id: int,
+        rejection_reason: str,
+    ) -> None:
+        """Reject a refund request."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            UPDATE refunds 
+            SET status = 'rejected',
+                resolved_at = CURRENT_TIMESTAMP,
+                resolved_by_staff_id = ?,
+                rejection_reason = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (staff_discord_id, rejection_reason, refund_id),
+        )
+        await self._connection.commit()
+
+    async def get_user_refunds(
+        self,
+        user_discord_id: int,
+        status: Optional[str] = None,
+    ) -> list[aiosqlite.Row]:
+        """Get refund requests for a user, optionally filtered by status."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        if status:
+            cursor = await self._connection.execute(
+                """
+                SELECT r.*, o.created_at as order_date
+                FROM refunds r
+                JOIN orders o ON r.order_id = o.id
+                WHERE r.user_discord_id = ? AND r.status = ?
+                ORDER BY r.created_at DESC
+                """,
+                (user_discord_id, status),
+            )
+        else:
+            cursor = await self._connection.execute(
+                """
+                SELECT r.*, o.created_at as order_date
+                FROM refunds r
+                JOIN orders o ON r.order_id = o.id
+                WHERE r.user_discord_id = ?
+                ORDER BY r.created_at DESC
+                """,
+                (user_discord_id,),
+            )
+        return await cursor.fetchall()
+
+    async def get_refund_by_id(self, refund_id: int) -> Optional[aiosqlite.Row]:
+        """Get a specific refund by ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT r.*, o.created_at as order_date, p.service_name, p.variant_name
+            FROM refunds r
+            JOIN orders o ON r.order_id = o.id
+            JOIN products p ON o.product_id = p.id
+            WHERE r.id = ?
+            """,
+            (refund_id,),
+        )
+        return await cursor.fetchone()
+
+    async def get_pending_refunds(self) -> list[aiosqlite.Row]:
+        """Get all pending refund requests for staff review."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT r.*, o.created_at as order_date, p.service_name, p.variant_name
+            FROM refunds r
+            JOIN orders o ON r.order_id = o.id
+            JOIN products p ON o.product_id = p.id
+            WHERE r.status = 'pending'
+            ORDER BY r.created_at ASC
+            """
+        )
+        return await cursor.fetchall()
+
+    async def validate_order_for_refund(
+        self,
+        order_id: int,
+        user_discord_id: int,
+        max_days: int = 3,
+    ) -> Optional[aiosqlite.Row]:
+        """Validate that an order belongs to the user and is within the refund window."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT o.*, p.service_name, p.variant_name
+            FROM orders o
+            JOIN products p ON o.product_id = p.id
+            WHERE o.id = ? 
+              AND o.user_discord_id = ?
+              AND o.status IN ('fulfilled', 'refill')
+              AND o.created_at >= datetime('now', '-' || ? || ' days')
+            """,
+            (order_id, user_discord_id, max_days),
+        )
+        return await cursor.fetchone()
