@@ -34,6 +34,295 @@ INACTIVITY_CLOSE_HOURS = 49
 CHECK_INTERVAL_MINUTES = 10
 
 
+class TicketPanelView(discord.ui.View):
+    """Persistent view for the ticket panel."""
+    
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(
+        label="General Support",
+        style=discord.ButtonStyle.primary,
+        custom_id="ticket_panel:support",
+        emoji="🛒"
+    )
+    async def general_support_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(GeneralSupportModal())
+    
+    @discord.ui.button(
+        label="Refund Support",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_panel:refund",
+        emoji="🛡️"
+    )
+    async def refund_support_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(RefundSupportModal())
+
+
+class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket"):
+    """Modal for collecting general support ticket information."""
+    
+    description = discord.ui.TextInput(
+        label="Description",
+        placeholder="Brief description of your issue...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=1000,
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from bot import ApexCoreBot
+        
+        if not isinstance(interaction.client, ApexCoreBot):
+            await interaction.response.send_message(
+                "An error occurred. Please try again.", ephemeral=True
+            )
+            return
+        
+        bot: ApexCoreBot = interaction.client
+        
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This must be used in a server.", ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        user_id = interaction.user.id
+        category_id = bot.config.ticket_categories.support
+        category = interaction.guild.get_channel(category_id)
+        
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(
+                "Unable to create ticket: support category not found.",
+                ephemeral=True
+            )
+            logger.error("Support category %s not found", category_id)
+            return
+        
+        try:
+            cog = bot.get_cog("TicketManagementCog")
+            if not isinstance(cog, TicketManagementCog):
+                await interaction.followup.send(
+                    "Ticket system is not available.", ephemeral=True
+                )
+                return
+            
+            channel_name = cog._generate_channel_name(interaction.user.name, "support")
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"General support ticket for {interaction.user.name}",
+            )
+            
+            ticket_id = await bot.db.create_ticket(
+                user_discord_id=user_id,
+                channel_id=channel.id,
+                status="open",
+                ticket_type="support",
+            )
+            
+            admin_role_id = bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            embed = create_embed(
+                title="General Support Ticket",
+                description=f"{interaction.user.mention} opened a support ticket.\n\n**Issue:** {self.description.value}",
+                color=discord.Color.blue(),
+                timestamp=True,
+            )
+            embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(bot.config.operating_hours),
+                inline=False,
+            )
+            
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+            
+            await channel.send(content=content, embed=embed)
+            
+            member = interaction.user
+            if isinstance(member, discord.Member):
+                try:
+                    await channel.set_permissions(
+                        member,
+                        read_messages=True,
+                        send_messages=True,
+                        view_channel=True,
+                    )
+                except discord.HTTPException as e:
+                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
+            
+            await interaction.followup.send(
+                f"✅ Support ticket created: {channel.mention}",
+                ephemeral=True
+            )
+            logger.info("Created general support ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
+            
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                "Failed to create ticket. Please try again.",
+                ephemeral=True
+            )
+            logger.error("Failed to create ticket channel: %s", e)
+
+
+class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
+    """Modal for collecting refund request information."""
+    
+    order_id = discord.ui.TextInput(
+        label="Order ID",
+        placeholder="Your order ID number...",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50,
+    )
+    
+    reason = discord.ui.TextInput(
+        label="Refund Reason",
+        placeholder="Reason for your refund request...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=1000,
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from bot import ApexCoreBot
+        
+        if not isinstance(interaction.client, ApexCoreBot):
+            await interaction.response.send_message(
+                "An error occurred. Please try again.", ephemeral=True
+            )
+            return
+        
+        bot: ApexCoreBot = interaction.client
+        
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This must be used in a server.", ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        try:
+            order_id_int = int(self.order_id.value)
+        except ValueError:
+            await interaction.followup.send(
+                "Invalid order ID. Please enter a valid number.",
+                ephemeral=True
+            )
+            return
+        
+        user_id = interaction.user.id
+        category_id = bot.config.ticket_categories.support
+        category = interaction.guild.get_channel(category_id)
+        
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(
+                "Unable to create ticket: support category not found.",
+                ephemeral=True
+            )
+            logger.error("Support category %s not found", category_id)
+            return
+        
+        try:
+            cog = bot.get_cog("TicketManagementCog")
+            if not isinstance(cog, TicketManagementCog):
+                await interaction.followup.send(
+                    "Ticket system is not available.", ephemeral=True
+                )
+                return
+            
+            ticket_id, counter = await bot.db.create_ticket_with_counter(
+                user_discord_id=user_id,
+                channel_id=0,
+                status="open",
+                ticket_type="refund",
+                order_id=order_id_int,
+                priority="high",
+            )
+            
+            channel_name = cog._generate_channel_name(
+                interaction.user.name, "refund", counter
+            )
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"Refund ticket #{counter} for {interaction.user.name}",
+            )
+            
+            await bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await bot.db._connection.commit()
+            
+            admin_role_id = bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            embed = create_embed(
+                title="🛡️ Refund Request Ticket",
+                description=f"{interaction.user.mention} opened a refund request ticket.\n\n**Reason:** {self.reason.value}",
+                color=discord.Color.orange(),
+                timestamp=True,
+            )
+            embed.add_field(name="Order ID", value=f"#{order_id_int}", inline=True)
+            embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(name="Priority", value="High", inline=True)
+            embed.add_field(
+                name="Refund Policy",
+                value="Our staff will review your refund request and respond within 24 hours during operating hours.",
+                inline=False,
+            )
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(bot.config.operating_hours),
+                inline=False,
+            )
+            
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+            
+            await channel.send(content=content, embed=embed)
+            
+            member = interaction.user
+            if isinstance(member, discord.Member):
+                try:
+                    await channel.set_permissions(
+                        member,
+                        read_messages=True,
+                        send_messages=True,
+                        view_channel=True,
+                    )
+                except discord.HTTPException as e:
+                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
+            
+            await interaction.followup.send(
+                f"✅ Refund ticket created: {channel.mention}",
+                ephemeral=True
+            )
+            logger.info("Created refund ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
+            
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                "Failed to create ticket. Please try again.",
+                ephemeral=True
+            )
+            logger.error("Failed to create ticket channel: %s", e)
+
+
 class TicketManagementCog(commands.Cog):
     def __init__(self, bot: ApexCoreBot) -> None:
         self.bot = bot
@@ -42,6 +331,37 @@ class TicketManagementCog(commands.Cog):
 
     def cog_unload(self) -> None:
         self.ticket_lifecycle_task.cancel()
+
+    def _sanitize_username(self, username: str) -> str:
+        """Sanitize username for use in channel names."""
+        sanitized = username.lower()
+        sanitized = ''.join(c if c.isalnum() or c == '-' else '-' for c in sanitized)
+        sanitized = sanitized.strip('-')
+        if not sanitized:
+            sanitized = "user"
+        return sanitized[:20]
+
+    def _generate_channel_name(
+        self, username: str, ticket_type: str, counter: Optional[int] = None
+    ) -> str:
+        """Generate channel name based on ticket type and counter.
+        
+        Args:
+            username: Discord username
+            ticket_type: Type of ticket (support, order, refund, billing, etc.)
+            counter: Optional counter for numbered tickets
+            
+        Returns:
+            Formatted channel name (e.g., ticket-username-order1, ticket-username-QA)
+        """
+        sanitized_username = self._sanitize_username(username)
+        
+        if ticket_type == "support":
+            return f"ticket-{sanitized_username}-QA"
+        elif counter is not None:
+            return f"ticket-{sanitized_username}-{ticket_type}{counter}"
+        else:
+            return f"ticket-{sanitized_username}-{ticket_type}"
 
     def _is_admin(self, member: discord.Member | None) -> bool:
         if member is None:
@@ -432,16 +752,6 @@ class TicketManagementCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id
-        existing_ticket = await self.bot.db.get_open_ticket_for_user(user_id)
-        if existing_ticket:
-            channel_mention = f"<#{existing_ticket['channel_id']}>"
-            await interaction.followup.send(
-                f"You already have an open ticket: {channel_mention}\n"
-                "Please close it before opening a new one.",
-                ephemeral=True
-            )
-            return
-
         category_id = self.bot.config.ticket_categories.support
         category = interaction.guild.get_channel(category_id)
         if not isinstance(category, discord.CategoryChannel):
@@ -453,19 +763,33 @@ class TicketManagementCog(commands.Cog):
             return
 
         try:
-            channel = await interaction.guild.create_text_channel(
-                name=f"order-{user_id}",
-                category=category,
-                reason=f"Order support ticket for {interaction.user.name}",
-            )
-
-            ticket_id = await self.bot.db.create_ticket(
+            ticket_id, counter = await self.bot.db.create_ticket_with_counter(
                 user_discord_id=user_id,
-                channel_id=channel.id,
+                channel_id=0,
                 status="open",
                 ticket_type="order",
                 order_id=order_id,
             )
+            
+            channel_name = self._generate_channel_name(
+                interaction.user.name, "order", counter
+            )
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"Order support ticket #{counter} for {interaction.user.name}",
+            )
+
+            await self.bot.db.update_ticket(channel.id, status="open")
+            await self.bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await self.bot.db._connection.commit()
+
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="Order Support Ticket",
@@ -476,8 +800,17 @@ class TicketManagementCog(commands.Cog):
             if order_id:
                 embed.add_field(name="Order ID", value=str(order_id), inline=True)
             embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
 
-            await channel.send(embed=embed)
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+
+            await channel.send(content=content, embed=embed)
             
             member = interaction.user
             if isinstance(member, discord.Member):
@@ -495,7 +828,7 @@ class TicketManagementCog(commands.Cog):
                 f"✅ Ticket created: {channel.mention}",
                 ephemeral=True
             )
-            logger.info("Created order ticket #%s for user %s", ticket_id, user_id)
+            logger.info("Created order ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
 
         except discord.HTTPException as e:
             await interaction.followup.send(
@@ -524,16 +857,6 @@ class TicketManagementCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id
-        existing_ticket = await self.bot.db.get_open_ticket_for_user(user_id)
-        if existing_ticket:
-            channel_mention = f"<#{existing_ticket['channel_id']}>"
-            await interaction.followup.send(
-                f"You already have an open ticket: {channel_mention}\n"
-                "Please close it before opening a new one.",
-                ephemeral=True
-            )
-            return
-
         category_id = self.bot.config.ticket_categories.support
         category = interaction.guild.get_channel(category_id)
         if not isinstance(category, discord.CategoryChannel):
@@ -545,19 +868,32 @@ class TicketManagementCog(commands.Cog):
             return
 
         try:
-            channel = await interaction.guild.create_text_channel(
-                name=f"warranty-{user_id}",
-                category=category,
-                reason=f"Warranty support ticket for {interaction.user.name}",
-            )
-
-            ticket_id = await self.bot.db.create_ticket(
+            ticket_id, counter = await self.bot.db.create_ticket_with_counter(
                 user_discord_id=user_id,
-                channel_id=channel.id,
+                channel_id=0,
                 status="open",
                 ticket_type="warranty",
                 priority="high",
             )
+            
+            channel_name = self._generate_channel_name(
+                interaction.user.name, "warranty", counter
+            )
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"Warranty ticket #{counter} for {interaction.user.name}",
+            )
+
+            await self.bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await self.bot.db._connection.commit()
+
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="Warranty Support Ticket",
@@ -567,8 +903,17 @@ class TicketManagementCog(commands.Cog):
             )
             embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
             embed.add_field(name="Priority", value="High", inline=True)
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
 
-            await channel.send(embed=embed)
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+
+            await channel.send(content=content, embed=embed)
             
             member = interaction.user
             if isinstance(member, discord.Member):
@@ -586,7 +931,7 @@ class TicketManagementCog(commands.Cog):
                 f"✅ Warranty ticket created: {channel.mention}",
                 ephemeral=True
             )
-            logger.info("Created warranty ticket #%s for user %s", ticket_id, user_id)
+            logger.info("Created warranty ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
 
         except discord.HTTPException as e:
             await interaction.followup.send(
@@ -595,11 +940,11 @@ class TicketManagementCog(commands.Cog):
             )
             logger.error("Failed to create ticket channel: %s", e)
 
-    @ticket_group.command(name="general", description="Open a general support ticket")
+    @ticket_group.command(name="support", description="Open a general support ticket")
     @app_commands.describe(
         description="Brief description of your issue",
     )
-    async def ticket_general(
+    async def ticket_support(
         self,
         interaction: discord.Interaction,
         description: str,
@@ -613,16 +958,6 @@ class TicketManagementCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id
-        existing_ticket = await self.bot.db.get_open_ticket_for_user(user_id)
-        if existing_ticket:
-            channel_mention = f"<#{existing_ticket['channel_id']}>"
-            await interaction.followup.send(
-                f"You already have an open ticket: {channel_mention}\n"
-                "Please close it before opening a new one.",
-                ephemeral=True
-            )
-            return
-
         category_id = self.bot.config.ticket_categories.support
         category = interaction.guild.get_channel(category_id)
         if not isinstance(category, discord.CategoryChannel):
@@ -634,8 +969,12 @@ class TicketManagementCog(commands.Cog):
             return
 
         try:
+            channel_name = self._generate_channel_name(
+                interaction.user.name, "support"
+            )
+            
             channel = await interaction.guild.create_text_channel(
-                name=f"support-{user_id}",
+                name=channel_name,
                 category=category,
                 reason=f"General support ticket for {interaction.user.name}",
             )
@@ -647,6 +986,9 @@ class TicketManagementCog(commands.Cog):
                 ticket_type="support",
             )
 
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+
             embed = create_embed(
                 title="General Support Ticket",
                 description=f"{interaction.user.mention} opened a support ticket.\n\n**Issue:** {description}",
@@ -654,8 +996,17 @@ class TicketManagementCog(commands.Cog):
                 timestamp=True,
             )
             embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
 
-            await channel.send(embed=embed)
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+
+            await channel.send(content=content, embed=embed)
             
             member = interaction.user
             if isinstance(member, discord.Member):
@@ -673,7 +1024,218 @@ class TicketManagementCog(commands.Cog):
                 f"✅ Support ticket created: {channel.mention}",
                 ephemeral=True
             )
-            logger.info("Created general support ticket #%s for user %s", ticket_id, user_id)
+            logger.info("Created general support ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
+
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                "Failed to create ticket. Please try again.",
+                ephemeral=True
+            )
+            logger.error("Failed to create ticket channel: %s", e)
+
+    @ticket_group.command(name="refund", description="Open a refund request ticket")
+    @app_commands.describe(
+        order_id="Your order ID",
+        reason="Reason for refund request",
+    )
+    async def ticket_refund(
+        self,
+        interaction: discord.Interaction,
+        order_id: int,
+        reason: str,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        user_id = interaction.user.id
+        category_id = self.bot.config.ticket_categories.support
+        category = interaction.guild.get_channel(category_id)
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(
+                "Unable to create ticket: support category not found.",
+                ephemeral=True
+            )
+            logger.error("Support category %s not found", category_id)
+            return
+
+        try:
+            ticket_id, counter = await self.bot.db.create_ticket_with_counter(
+                user_discord_id=user_id,
+                channel_id=0,
+                status="open",
+                ticket_type="refund",
+                order_id=order_id,
+                priority="high",
+            )
+            
+            channel_name = self._generate_channel_name(
+                interaction.user.name, "refund", counter
+            )
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"Refund ticket #{counter} for {interaction.user.name}",
+            )
+
+            await self.bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await self.bot.db._connection.commit()
+
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+
+            embed = create_embed(
+                title="🛡️ Refund Request Ticket",
+                description=f"{interaction.user.mention} opened a refund request ticket.\n\n**Reason:** {reason}",
+                color=discord.Color.orange(),
+                timestamp=True,
+            )
+            embed.add_field(name="Order ID", value=f"#{order_id}", inline=True)
+            embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(name="Priority", value="High", inline=True)
+            embed.add_field(
+                name="Refund Policy",
+                value="Our staff will review your refund request and respond within 24 hours during operating hours.",
+                inline=False,
+            )
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
+
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+
+            await channel.send(content=content, embed=embed)
+            
+            member = interaction.user
+            if isinstance(member, discord.Member):
+                try:
+                    await channel.set_permissions(
+                        member,
+                        read_messages=True,
+                        send_messages=True,
+                        view_channel=True,
+                    )
+                except discord.HTTPException as e:
+                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
+
+            await interaction.followup.send(
+                f"✅ Refund ticket created: {channel.mention}",
+                ephemeral=True
+            )
+            logger.info("Created refund ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
+
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                "Failed to create ticket. Please try again.",
+                ephemeral=True
+            )
+            logger.error("Failed to create ticket channel: %s", e)
+
+    @ticket_group.command(name="billing", description="Open a billing issue ticket")
+    @app_commands.describe(
+        description="Brief description of your billing issue",
+    )
+    async def ticket_billing(
+        self,
+        interaction: discord.Interaction,
+        description: str,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        user_id = interaction.user.id
+        category_id = self.bot.config.ticket_categories.support
+        category = interaction.guild.get_channel(category_id)
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(
+                "Unable to create ticket: support category not found.",
+                ephemeral=True
+            )
+            logger.error("Support category %s not found", category_id)
+            return
+
+        try:
+            ticket_id, counter = await self.bot.db.create_ticket_with_counter(
+                user_discord_id=user_id,
+                channel_id=0,
+                status="open",
+                ticket_type="billing",
+                priority="high",
+            )
+            
+            channel_name = self._generate_channel_name(
+                interaction.user.name, "billing", counter
+            )
+            
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                reason=f"Billing ticket #{counter} for {interaction.user.name}",
+            )
+
+            await self.bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await self.bot.db._connection.commit()
+
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+
+            embed = create_embed(
+                title="💳 Billing Issue Ticket",
+                description=f"{interaction.user.mention} opened a billing issue ticket.\n\n**Issue:** {description}",
+                color=discord.Color.gold(),
+                timestamp=True,
+            )
+            embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=True)
+            embed.add_field(name="Priority", value="High", inline=True)
+            embed.add_field(
+                name="Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
+
+            content = f"{interaction.user.mention}"
+            if admin_role:
+                content = f"{admin_role.mention} {content}"
+
+            await channel.send(content=content, embed=embed)
+            
+            member = interaction.user
+            if isinstance(member, discord.Member):
+                try:
+                    await channel.set_permissions(
+                        member,
+                        read_messages=True,
+                        send_messages=True,
+                        view_channel=True,
+                    )
+                except discord.HTTPException as e:
+                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
+
+            await interaction.followup.send(
+                f"✅ Billing ticket created: {channel.mention}",
+                ephemeral=True
+            )
+            logger.info("Created billing ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
 
         except discord.HTTPException as e:
             await interaction.followup.send(
@@ -885,6 +1447,27 @@ class TicketManagementCog(commands.Cog):
             )
             logger.error("Error retrieving transcript for ticket %s: %s", ticket_id, e, exc_info=True)
 
+    @commands.command(name="setup_tickets")
+    @commands.has_permissions(administrator=True)
+    async def setup_tickets(self, ctx: commands.Context) -> None:
+        """Setup the persistent ticket panel (admin only)."""
+        embed = create_embed(
+            title="🎫 Open a Support Ticket",
+            description=(
+                "Need help? Click one of the buttons below to open a support ticket.\n\n"
+                "**🛒 General Support** - For general questions and support\n"
+                "**🛡️ Refund Support** - For refund requests and issues\n\n"
+                f"**Operating Hours:** {render_operating_hours(self.bot.config.operating_hours)}"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Apex Core • Support System")
+        
+        view = TicketPanelView()
+        await ctx.send(embed=embed, view=view)
+        await ctx.message.delete()
+        logger.info("Ticket panel setup by %s in channel %s", ctx.author.id, ctx.channel.id)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
@@ -905,6 +1488,7 @@ async def setup(bot: ApexCoreBot) -> None:
             "chat_exporter library not found. Transcript generation will be disabled. "
             "Install with: pip install chat-exporter"
         )
+    bot.add_view(TicketPanelView())
     cog = TicketManagementCog(bot)
     bot.tree.add_command(cog.ticket_group)
     await bot.add_cog(cog)

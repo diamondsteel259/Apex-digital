@@ -19,7 +19,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 7
+        self.target_schema_version = 8
 
     async def connect(self) -> None:
         if self._connection is None:
@@ -87,6 +87,7 @@ class Database:
             5: ("wallet_transactions_table", self._migration_v5),
             6: ("extend_orders_schema", self._migration_v6),
             7: ("transcripts_table", self._migration_v7),
+            8: ("ticket_counter_table", self._migration_v8),
         }
 
         for version in sorted(migrations.keys()):
@@ -433,6 +434,34 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_transcripts_user
                 ON transcripts(user_discord_id)
+            """
+        )
+
+        await self._connection.commit()
+
+    async def _migration_v8(self) -> None:
+        """Migration v8: Create ticket_counter table for unique ticket naming."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_counter (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                ticket_type TEXT NOT NULL,
+                next_count INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, ticket_type)
+            )
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ticket_counter_user_type
+                ON ticket_counter(user_id, ticket_type)
             """
         )
 
@@ -1143,6 +1172,80 @@ class Database:
 
         await self._connection.execute(query, params)
         await self._connection.commit()
+
+    async def get_next_ticket_count(self, user_id: int, ticket_type: str) -> int:
+        """Get the next ticket count for a user and ticket type, incrementing the counter."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            cursor = await self._connection.execute(
+                """
+                SELECT next_count FROM ticket_counter
+                WHERE user_id = ? AND ticket_type = ?
+                """,
+                (user_id, ticket_type),
+            )
+            row = await cursor.fetchone()
+            
+            if row:
+                count = row["next_count"]
+                await self._connection.execute(
+                    """
+                    UPDATE ticket_counter
+                    SET next_count = next_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND ticket_type = ?
+                    """,
+                    (user_id, ticket_type),
+                )
+            else:
+                count = 1
+                await self._connection.execute(
+                    """
+                    INSERT INTO ticket_counter (user_id, ticket_type, next_count)
+                    VALUES (?, ?, ?)
+                    """,
+                    (user_id, ticket_type, 2),
+                )
+            
+            await self._connection.commit()
+            return count
+
+    async def create_ticket_with_counter(
+        self,
+        *,
+        user_discord_id: int,
+        channel_id: int,
+        status: str = "open",
+        ticket_type: str = "support",
+        order_id: Optional[int] = None,
+        assigned_staff_id: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """Create a ticket and return both ticket_id and the counter used.
+        
+        Returns:
+            Tuple of (ticket_id, counter_value)
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        counter = await self.get_next_ticket_count(user_discord_id, ticket_type)
+        
+        ticket_id = await self.create_ticket(
+            user_discord_id=user_discord_id,
+            channel_id=channel_id,
+            status=status,
+            ticket_type=ticket_type,
+            order_id=order_id,
+            assigned_staff_id=assigned_staff_id,
+            priority=priority,
+        )
+        
+        return ticket_id, counter
 
     async def create_order(
         self,
