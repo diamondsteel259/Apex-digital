@@ -654,17 +654,6 @@ class StorefrontCog(commands.Cog):
             )
             return
 
-        existing_ticket = await self.bot.db.get_open_ticket_for_user(member.id)
-        if existing_ticket:
-            channel = interaction.guild.get_channel(existing_ticket["channel_id"])
-            if channel:
-                await interaction.followup.send(
-                    f"You already have an open ticket: {channel.mention}",
-                    ephemeral=True,
-                )
-                return
-            await self.bot.db.update_ticket_status(existing_ticket["channel_id"], "closed")
-
         support_category_id = self.bot.config.ticket_categories.support
         category = interaction.guild.get_channel(support_category_id)
         if not isinstance(category, discord.CategoryChannel):
@@ -682,7 +671,21 @@ class StorefrontCog(commands.Cog):
             )
             return
 
-        channel_name = f"ticket-{member.name}"[:95]
+        ticket_id, counter = await self.bot.db.create_ticket_with_counter(
+            user_discord_id=member.id,
+            channel_id=0,
+            status="open",
+            ticket_type="order",
+        )
+
+        sanitized_username = member.name.lower()
+        sanitized_username = ''.join(c if c.isalnum() or c == '-' else '-' for c in sanitized_username)
+        sanitized_username = sanitized_username.strip('-')[:20]
+        if not sanitized_username:
+            sanitized_username = "user"
+        
+        channel_name = f"ticket-{sanitized_username}-order{counter}"
+
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
             member: discord.PermissionOverwrite(
@@ -713,10 +716,17 @@ class StorefrontCog(commands.Cog):
                 name=channel_name,
                 overwrites=overwrites,
                 reason=(
-                    f"Storefront ticket for {main_category}/{sub_category}/"
+                    f"Storefront ticket #{counter} for {main_category}/{sub_category}/"
                     f"{product['variant_name']} by {member.display_name}"
                 ),
             )
+            
+            await self.bot.db._connection.execute(
+                "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                (channel.id, ticket_id)
+            )
+            await self.bot.db._connection.commit()
+            
         except discord.HTTPException as error:
             logger.error("Failed to create support ticket: %s", error)
             await interaction.followup.send(
@@ -748,6 +758,7 @@ class StorefrontCog(commands.Cog):
         embed.add_field(name="Duration", value=duration, inline=True)
         embed.add_field(name="Refill", value=refill, inline=True)
         embed.add_field(name="Additional Info", value=additional_info, inline=False)
+        embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=False)
         embed.add_field(
             name="Operating Hours",
             value=render_operating_hours(self.bot.config.operating_hours),
@@ -764,8 +775,6 @@ class StorefrontCog(commands.Cog):
             embed=embed,
             view=payment_view,
         )
-
-        await self.bot.db.create_ticket(user_discord_id=member.id, channel_id=channel.id)
 
         try:
             dm_embed = create_embed(
