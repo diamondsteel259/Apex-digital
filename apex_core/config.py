@@ -104,12 +104,16 @@ def _parse_operating_hours(payload: dict[str, Any]) -> OperatingHours:
 def _parse_payment_methods(payload: Iterable[dict[str, Any]]) -> list[PaymentMethod]:
     methods: list[PaymentMethod] = []
     for item in payload:
+        metadata = dict(item.get("metadata", {}))
+        if "is_enabled" not in metadata and "is_enabled" in item:
+            metadata["is_enabled"] = item["is_enabled"]
+        
         methods.append(
             PaymentMethod(
                 name=item["name"],
                 instructions=item["instructions"],
                 emoji=item.get("emoji"),
-                metadata=item.get("metadata", {}),
+                metadata=metadata,
             )
         )
     return methods

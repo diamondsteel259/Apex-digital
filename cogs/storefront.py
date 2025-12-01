@@ -22,6 +22,116 @@ from apex_core.utils import (
 logger = logging.getLogger(__name__)
 
 
+def _build_payment_embed(
+    product: dict[str, Any],
+    user: discord.User | discord.Member,
+    final_price_cents: int,
+    user_balance_cents: int,
+    payment_methods: list,
+) -> discord.Embed:
+    """Build comprehensive payment options embed."""
+    variant_name = product.get("variant_name", "Unknown")
+    service_name = product.get("service_name", "Unknown")
+    start_time = product.get("start_time", "N/A")
+    
+    embed = create_embed(
+        title=f"💳 Payment Options for {variant_name}",
+        description=(
+            f"**Service:** {service_name}\n"
+            f"**Variant:** {variant_name}\n"
+            f"**Price:** {format_usd(final_price_cents)}\n"
+            f"**ETA:** {start_time}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.gold(),
+    )
+    
+    # Add enabled payment methods
+    enabled_methods = [m for m in payment_methods if m.metadata.get("is_enabled", True) != False]
+    
+    if enabled_methods:
+        methods_text = "**Available Payment Methods:**\n\n"
+        
+        for method in enabled_methods:
+            emoji = method.emoji or "💰"
+            name = method.name
+            instructions = method.instructions
+            metadata = method.metadata
+            
+            methods_text += f"{emoji} **{name}**\n"
+            methods_text += f"{instructions}\n"
+            
+            # Add specific metadata based on payment method
+            if name == "Wallet":
+                sufficient = user_balance_cents >= final_price_cents
+                status = "✅ Sufficient" if sufficient else "❌ Insufficient"
+                methods_text += f"• Current Balance: {format_usd(user_balance_cents)} ({status})\n"
+                methods_text += f"• Required: {format_usd(final_price_cents)}\n"
+            
+            elif name == "Binance":
+                if "pay_id" in metadata:
+                    methods_text += f"• **Pay ID:** `{metadata['pay_id']}`\n"
+                if "warning" in metadata:
+                    methods_text += f"• {metadata['warning']}\n"
+                if "url" in metadata:
+                    methods_text += f"• [Open Binance Pay]({metadata['url']})\n"
+            
+            elif name == "PayPal":
+                if "payout_email" in metadata:
+                    methods_text += f"• **Email:** {metadata['payout_email']}\n"
+                if "payment_link" in metadata:
+                    methods_text += f"• [Send Payment]({metadata['payment_link']})\n"
+            
+            elif name == "Tip.cc":
+                if "command" in metadata:
+                    cmd = metadata['command'].replace("{amount}", format_usd(final_price_cents))
+                    methods_text += f"• **Command:** `{cmd}`\n"
+                if "url" in metadata:
+                    methods_text += f"• [Visit Tip.cc]({metadata['url']})\n"
+                if "warning" in metadata:
+                    methods_text += f"• {metadata['warning']}\n"
+            
+            elif name == "CryptoJar":
+                if "command" in metadata:
+                    cmd = metadata['command'].replace("{amount}", format_usd(final_price_cents))
+                    methods_text += f"• **Command:** `{cmd}`\n"
+                if "url" in metadata:
+                    methods_text += f"• [Visit CryptoJar]({metadata['url']})\n"
+                if "warning" in metadata:
+                    methods_text += f"• {metadata['warning']}\n"
+            
+            elif name == "Crypto" and metadata.get("type") == "custom_networks":
+                if "networks" in metadata:
+                    networks = ", ".join(metadata["networks"])
+                    methods_text += f"• **Available Networks:** {networks}\n"
+                if "note" in metadata:
+                    methods_text += f"• {metadata['note']}\n"
+            
+            methods_text += "\n"
+        
+        embed.add_field(
+            name="",
+            value=methods_text,
+            inline=False,
+        )
+    
+    # Add footer with additional info
+    embed.add_field(
+        name="ℹ️ Important Information",
+        value=(
+            "• Once payment is confirmed by staff, you'll receive access\n"
+            "• Need help? Contact our support team\n"
+            "• Upload payment proof using the button below"
+        ),
+        inline=False,
+    )
+    
+    embed.set_footer(text="Apex Core • Payment System")
+    embed.set_thumbnail(url=user.display_avatar.url)
+    
+    return embed
+
+
 def _product_display_name(product: Any) -> str:
     if not product:
         return "Unknown Product"
@@ -261,29 +371,197 @@ class ProductDisplayView(discord.ui.View):
 # Payment Method Buttons (for ticket channel)
 # ============================================================================
 
-class PaymentMethodButton(discord.ui.Button["PaymentMethodView"]):
-    def __init__(self, method_name: str, emoji: str | None = None) -> None:
-        label = f"{emoji} {method_name}" if emoji else method_name
+class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
+    def __init__(
+        self,
+        product_id: int,
+        final_price_cents: int,
+        user_balance_cents: int,
+        sufficient: bool,
+    ) -> None:
+        style = discord.ButtonStyle.success if sufficient else discord.ButtonStyle.danger
+        label = "💳 Pay with Wallet"
         super().__init__(
             label=label,
-            style=discord.ButtonStyle.secondary,
+            style=style,
+            disabled=not sufficient,
         )
-        self.method_name = method_name
+        self.product_id = product_id
+        self.final_price_cents = final_price_cents
+        self.user_balance_cents = user_balance_cents
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        from bot import ApexCoreBot
+        
+        if not isinstance(interaction.client, ApexCoreBot):
+            await interaction.response.send_message(
+                "An error occurred. Please try again.", ephemeral=True
+            )
+            return
+        
+        bot: ApexCoreBot = interaction.client
+        cog: StorefrontCog = bot.get_cog("StorefrontCog")  # type: ignore
+        
+        if not cog:
+            await interaction.response.send_message(
+                "Storefront cog not loaded.", ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        product = await bot.db.get_product(self.product_id)
+        if not product or not product["is_active"]:
+            await interaction.followup.send(
+                "This product is no longer available.", ephemeral=True
+            )
+            return
+        
+        user_row = await bot.db.get_user(interaction.user.id)
+        if not user_row or user_row["wallet_balance_cents"] < self.final_price_cents:
+            await interaction.followup.send(
+                f"Insufficient balance. You need {format_usd(self.final_price_cents)} "
+                f"but only have {format_usd(user_row['wallet_balance_cents'] if user_row else 0)}.",
+                ephemeral=True,
+            )
+            return
+        
+        product_name = _product_display_name(product)
+        
+        try:
+            vip_tier = calculate_vip_tier(
+                user_row["total_lifetime_spent_cents"], bot.config
+            )
+            discount_percent = await cog._calculate_discount(
+                interaction.user.id, self.product_id, vip_tier
+            )
+            
+            order_metadata = json.dumps({
+                "product_name": product_name,
+                "base_price_cents": product["price_cents"],
+                "discount_percent": discount_percent,
+                "vip_tier": vip_tier.name if vip_tier else None,
+            })
+            
+            order_id, new_balance = await bot.db.purchase_product(
+                user_discord_id=interaction.user.id,
+                product_id=self.product_id,
+                price_paid_cents=self.final_price_cents,
+                discount_applied_percent=discount_percent,
+                order_metadata=order_metadata,
+            )
+            
+            success_embed = create_embed(
+                title="Payment Confirmed!",
+                description=(
+                    f"✅ Payment successful via Wallet\n\n"
+                    f"**Product:** {product_name}\n"
+                    f"**Amount Paid:** {format_usd(self.final_price_cents)}\n"
+                    f"**New Balance:** {format_usd(new_balance)}\n"
+                    f"**Order ID:** #{order_id}\n\n"
+                    "A staff member will process your order shortly."
+                ),
+                color=discord.Color.green(),
+            )
+            await interaction.followup.send(embed=success_embed, ephemeral=True)
+            
+            if isinstance(interaction.channel, discord.TextChannel):
+                await interaction.channel.send(
+                    f"✅ {interaction.user.mention} has paid {format_usd(self.final_price_cents)} via Wallet. Order ID: #{order_id}"
+                )
+            
+        except ValueError as e:
+            await interaction.followup.send(
+                f"Payment failed: {str(e)}", ephemeral=True
+            )
+        except Exception as e:
+            logger.error("Wallet payment error for user %s: %s", interaction.user.id, e)
+            await interaction.followup.send(
+                "An error occurred while processing your payment. Please contact support.",
+                ephemeral=True,
+            )
+
+
+class PaymentProofUploadButton(discord.ui.Button["PaymentOptionsView"]):
+    def __init__(self) -> None:
+        super().__init__(
+            label="💾 Upload Payment Proof",
+            style=discord.ButtonStyle.primary,
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
-            f"Selected payment method: **{self.method_name}**\n\n"
-            "A staff member will assist you with this payment method shortly.",
+            "📎 **Upload Your Payment Proof**\n\n"
+            "Please upload a screenshot or proof of your payment in this channel.\n\n"
+            "Once uploaded, our staff will verify it and confirm your order.\n"
+            "You'll receive a DM once your payment is confirmed!",
             ephemeral=True,
         )
 
 
-class PaymentMethodView(discord.ui.View):
-    def __init__(self) -> None:
+class RequestCryptoAddressButton(discord.ui.Button["PaymentOptionsView"]):
+    def __init__(self, available_networks: list[str]) -> None:
+        super().__init__(
+            label="₿ Request Crypto Address",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.available_networks = available_networks
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        networks_text = ", ".join(self.available_networks)
+        
+        await interaction.response.send_message(
+            f"**Crypto Payment Request Sent**\n\n"
+            f"Available networks: {networks_text}\n\n"
+            "An admin will provide you with the appropriate crypto address in this channel.\n"
+            "Please wait for their response.",
+            ephemeral=True,
+        )
+        
+        if isinstance(interaction.channel, discord.TextChannel):
+            await interaction.channel.send(
+                f"🔔 {interaction.user.mention} is requesting a crypto address.\n"
+                f"Available networks: {networks_text}\n\n"
+                "**Staff:** Please provide the appropriate crypto address for this user."
+            )
+
+
+class PaymentOptionsView(discord.ui.View):
+    def __init__(
+        self,
+        product_id: int,
+        final_price_cents: int,
+        user_balance_cents: int,
+        payment_methods: list,
+    ) -> None:
         super().__init__(timeout=None)
-        self.add_item(PaymentMethodButton("Binance Pay", "💳"))
-        self.add_item(PaymentMethodButton("Tip.cc", "💰"))
-        self.add_item(PaymentMethodButton("Crypto", "₿"))
+        
+        # Check if wallet is enabled and add wallet button if user has sufficient balance
+        has_wallet_method = any(
+            m.name == "Wallet" and m.metadata.get("type") == "internal" 
+            for m in payment_methods
+        )
+        
+        if has_wallet_method:
+            sufficient = user_balance_cents >= final_price_cents
+            self.add_item(WalletPaymentButton(
+                product_id=product_id,
+                final_price_cents=final_price_cents,
+                user_balance_cents=user_balance_cents,
+                sufficient=sufficient,
+            ))
+        
+        # Add payment proof upload button
+        self.add_item(PaymentProofUploadButton())
+        
+        # Check if crypto method is enabled and add crypto address request button
+        crypto_method = next(
+            (m for m in payment_methods if m.name == "Crypto" and m.metadata.get("type") == "custom_networks"),
+            None
+        )
+        if crypto_method:
+            networks = crypto_method.metadata.get("networks", ["Bitcoin", "Ethereum", "Solana"])
+            self.add_item(RequestCryptoAddressButton(networks))
 
 
 # ============================================================================
@@ -735,44 +1013,115 @@ class StorefrontCog(commands.Cog):
             )
             return
 
+        user_row = await self.bot.db.get_user(member.id)
+        if not user_row:
+            await self.bot.db.ensure_user(member.id)
+            user_row = await self.bot.db.get_user(member.id)
+        
+        user_balance_cents = user_row["wallet_balance_cents"] if user_row else 0
+        
+        vip_tier = calculate_vip_tier(
+            user_row["total_lifetime_spent_cents"] if user_row else 0,
+            self.bot.config
+        )
+        discount_percent = await self._calculate_discount(
+            member.id, product_id, vip_tier
+        )
+        final_price_cents = int(product["price_cents"] * (1 - discount_percent / 100))
+        
+        payment_methods = []
+        if self.bot.config.payment_settings:
+            payment_methods = self.bot.config.payment_settings.payment_methods
+        elif self.bot.config.payment_methods:
+            payment_methods = self.bot.config.payment_methods
+        
+        enabled_methods = [
+            m for m in payment_methods 
+            if getattr(m, 'is_enabled', m.metadata.get('is_enabled', True)) != False
+        ]
+        
+        payment_embed = _build_payment_embed(
+            product=product,
+            user=member,
+            final_price_cents=final_price_cents,
+            user_balance_cents=user_balance_cents,
+            payment_methods=enabled_methods,
+        )
+        
+        payment_view = PaymentOptionsView(
+            product_id=product_id,
+            final_price_cents=final_price_cents,
+            user_balance_cents=user_balance_cents,
+            payment_methods=enabled_methods,
+        )
+        
         price_text = format_usd(product["price_cents"])
         start_time = product.get("start_time") or "N/A"
         duration = product.get("duration") or "N/A"
         refill = product.get("refill_period") or "N/A"
         additional_info = product.get("additional_info") or "N/A"
-
-        embed = create_embed(
-            title=f"Service Selected: {main_category} • {sub_category}",
+        
+        owner_embed = create_embed(
+            title=f"📦 New Order Ticket: {main_category} • {sub_category}",
             description=(
-                f"{member.mention}, thanks for opening a support ticket.\n\n"
-                f"We'll help you with **{product['service_name']} — {product['variant_name']}**."
+                f"**Customer:** {member.mention} ({member.display_name})\n"
+                f"**User ID:** {member.id}\n"
+                f"**Ticket ID:** #{ticket_id}\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
-            color=discord.Color.blurple(),
+            color=discord.Color.blue(),
         )
-        embed.add_field(
-            name="Price",
-            value=price_text,
+        owner_embed.add_field(
+            name="📋 Product Details",
+            value=(
+                f"**Service:** {product['service_name']}\n"
+                f"**Variant:** {product['variant_name']}\n"
+                f"**Base Price:** {price_text}\n"
+                f"**Final Price:** {format_usd(final_price_cents)}\n"
+                f"**Discount:** {discount_percent:.1f}%"
+            ),
+            inline=False,
+        )
+        owner_embed.add_field(
+            name="⏱️ Service Info",
+            value=(
+                f"**Start Time:** {start_time}\n"
+                f"**Duration:** {duration}\n"
+                f"**Refill:** {refill}"
+            ),
             inline=True,
         )
-        embed.add_field(name="Start Time", value=start_time, inline=True)
-        embed.add_field(name="Duration", value=duration, inline=True)
-        embed.add_field(name="Refill", value=refill, inline=True)
-        embed.add_field(name="Additional Info", value=additional_info, inline=False)
-        embed.add_field(name="Ticket ID", value=f"#{ticket_id}", inline=False)
-        embed.add_field(
-            name="Operating Hours",
+        owner_embed.add_field(
+            name="💰 Payment Info",
+            value=(
+                f"**Amount Due:** {format_usd(final_price_cents)}\n"
+                f"**User Balance:** {format_usd(user_balance_cents)}\n"
+                f"**Status:** Awaiting Payment"
+            ),
+            inline=True,
+        )
+        if additional_info and additional_info != "N/A":
+            owner_embed.add_field(
+                name="ℹ️ Additional Info",
+                value=additional_info,
+                inline=False,
+            )
+        owner_embed.add_field(
+            name="🕒 Operating Hours",
             value=render_operating_hours(self.bot.config.operating_hours),
             inline=False,
         )
-        embed.set_footer(text="Apex Core • Support")
-
-        payment_view = PaymentMethodView()
+        owner_embed.set_thumbnail(url=member.display_avatar.url)
+        owner_embed.set_footer(text="Apex Core • Order Management")
 
         await channel.send(
-            content=(
-                f"{admin_role.mention} {member.mention} — New product inquiry ticket opened."
-            ),
-            embed=embed,
+            content=f"{admin_role.mention} — New order ticket opened!",
+            embed=owner_embed,
+        )
+        
+        await channel.send(
+            content=f"{member.mention}",
+            embed=payment_embed,
             view=payment_view,
         )
 
@@ -1132,6 +1481,72 @@ class StorefrontCog(commands.Cog):
             f"Your support ticket is ready: {channel.mention}",
             ephemeral=True,
         )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Listen for payment proof uploads in ticket channels."""
+        if message.author.bot:
+            return
+        
+        if not message.attachments:
+            return
+        
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+        
+        channel_name = message.channel.name
+        if not channel_name.startswith("ticket-") or "-order" not in channel_name:
+            return
+        
+        ticket = await self.bot.db.get_ticket_by_channel(message.channel.id)
+        if not ticket or ticket["status"] != "open":
+            return
+        
+        if message.guild is None:
+            return
+        
+        admin_role = message.guild.get_role(self.bot.config.role_ids.admin)
+        if not admin_role:
+            return
+        
+        proof_embed = create_embed(
+            title="💾 Payment Proof Uploaded",
+            description=(
+                f"**User:** {message.author.mention}\n"
+                f"**Ticket ID:** #{ticket['id']}\n"
+                f"**Attachments:** {len(message.attachments)}\n\n"
+                "Staff: Please verify the payment proof and confirm the order."
+            ),
+            color=discord.Color.orange(),
+        )
+        
+        for i, attachment in enumerate(message.attachments, 1):
+            proof_embed.add_field(
+                name=f"Attachment {i}",
+                value=f"[{attachment.filename}]({attachment.url})",
+                inline=False,
+            )
+        
+        proof_embed.set_footer(text="Apex Core • Payment Verification")
+        
+        await message.channel.send(
+            content=f"🔔 {admin_role.mention}",
+            embed=proof_embed,
+        )
+        
+        try:
+            dm_embed = create_embed(
+                title="Payment Proof Received",
+                description=(
+                    "✅ Your payment proof has been received!\n\n"
+                    "Our staff team will verify your payment shortly.\n"
+                    "You'll receive a confirmation once your payment is approved."
+                ),
+                color=discord.Color.green(),
+            )
+            await message.author.send(embed=dm_embed)
+        except discord.Forbidden:
+            logger.warning("Could not DM user %s about payment proof receipt", message.author.id)
 
     @commands.command(name="setup_store")
     async def setup_store(self, ctx: commands.Context) -> None:
