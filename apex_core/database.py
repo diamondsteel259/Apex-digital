@@ -19,7 +19,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 9
+        self.target_schema_version = 10
 
     async def connect(self) -> None:
         if self._connection is None:
@@ -89,6 +89,7 @@ class Database:
             7: ("transcripts_table", self._migration_v7),
             8: ("ticket_counter_table", self._migration_v8),
             9: ("refunds_table", self._migration_v9),
+            10: ("referrals_table", self._migration_v10),
         }
 
         for version in sorted(migrations.keys()):
@@ -514,6 +515,51 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_refunds_status
                 ON refunds(status)
+            """
+        )
+
+        await self._connection.commit()
+
+    async def _migration_v10(self) -> None:
+        """Migration v10: Create referrals table for invite rewards tracking."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS referrals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_user_id INTEGER NOT NULL,
+                referred_user_id INTEGER UNIQUE NOT NULL,
+                referred_total_spend_cents INTEGER DEFAULT 0,
+                cashback_earned_cents INTEGER DEFAULT 0,
+                cashback_paid_cents INTEGER DEFAULT 0,
+                is_blacklisted INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(referrer_user_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(referred_user_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_referrals_referrer
+                ON referrals(referrer_user_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_referrals_referred
+                ON referrals(referred_user_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_referrals_blacklist
+                ON referrals(is_blacklisted)
             """
         )
 
@@ -1410,6 +1456,12 @@ class Database:
             row = await cursor.fetchone()
             new_lifetime_spend = row["total_lifetime_spent_cents"] if row else 0
             
+            # Log referral cashback if user was referred
+            try:
+                await self.log_referral_purchase(user_discord_id, order_id, price_paid_cents)
+            except Exception as e:
+                logger.error(f"Error logging referral purchase for user {user_discord_id}: {e}")
+            
             return order_id, new_lifetime_spend
 
     async def bulk_upsert_products(
@@ -1590,6 +1642,12 @@ class Database:
             )
 
             await self._connection.commit()
+
+            # Log referral cashback if user was referred
+            try:
+                await self.log_referral_purchase(user_discord_id, order_id, price_paid_cents)
+            except Exception as e:
+                logger.error(f"Error logging referral purchase for user {user_discord_id}: {e}")
 
             return order_id, new_balance
 
@@ -2026,3 +2084,235 @@ class Database:
             (order_id, user_discord_id, max_days),
         )
         return await cursor.fetchone()
+
+    async def create_referral(self, referrer_id: int, referred_id: int) -> int:
+        """Create a referral link between referrer and referred user.
+        
+        Args:
+            referrer_id: Discord ID of the user who referred someone
+            referred_id: Discord ID of the user who was referred
+            
+        Returns:
+            The referral record ID
+            
+        Raises:
+            RuntimeError: If the referral already exists or if self-referral is attempted
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        if referrer_id == referred_id:
+            raise RuntimeError("Users cannot refer themselves")
+
+        # Ensure both users exist
+        await self.ensure_user(referrer_id)
+        await self.ensure_user(referred_id)
+
+        # Check if referred user already has a referrer
+        cursor = await self._connection.execute(
+            "SELECT id FROM referrals WHERE referred_user_id = ?",
+            (referred_id,),
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            raise RuntimeError("This user has already been referred by someone")
+
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO referrals (referrer_user_id, referred_user_id)
+            VALUES (?, ?)
+            """,
+            (referrer_id, referred_id),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def log_referral_purchase(
+        self, referred_id: int, order_id: int, amount_cents: int
+    ) -> Optional[int]:
+        """Log a purchase by a referred user and update cashback.
+        
+        Args:
+            referred_id: Discord ID of the user who made the purchase
+            order_id: The order ID
+            amount_cents: Amount of the purchase in cents
+            
+        Returns:
+            The cashback amount in cents if applicable, None if no referral or blacklisted
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Get the referral record
+        cursor = await self._connection.execute(
+            """
+            SELECT id, referrer_user_id, is_blacklisted
+            FROM referrals
+            WHERE referred_user_id = ?
+            """,
+            (referred_id,),
+        )
+        referral = await cursor.fetchone()
+
+        if not referral:
+            return None
+
+        if referral["is_blacklisted"]:
+            logger.info(f"Referral for user {referred_id} is blacklisted, skipping cashback")
+            return None
+
+        # Calculate 0.5% cashback
+        cashback_cents = int(amount_cents * 0.005)
+
+        # Update the referral record
+        await self._connection.execute(
+            """
+            UPDATE referrals
+            SET referred_total_spend_cents = referred_total_spend_cents + ?,
+                cashback_earned_cents = cashback_earned_cents + ?
+            WHERE referred_user_id = ?
+            """,
+            (amount_cents, cashback_cents, referred_id),
+        )
+        await self._connection.commit()
+
+        logger.info(
+            f"Referral cashback logged: {cashback_cents} cents for referrer "
+            f"{referral['referrer_user_id']} from order {order_id}"
+        )
+
+        return cashback_cents
+
+    async def get_referral_stats(self, referrer_id: int) -> dict:
+        """Get referral statistics for a user.
+        
+        Args:
+            referrer_id: Discord ID of the referrer
+            
+        Returns:
+            Dictionary with referral stats including:
+            - referral_count: Number of users referred
+            - total_spend_cents: Total amount spent by referred users
+            - total_earned_cents: Total cashback earned
+            - total_paid_cents: Total cashback already paid out
+            - pending_cents: Cashback earned but not yet paid
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                COUNT(*) as referral_count,
+                COALESCE(SUM(referred_total_spend_cents), 0) as total_spend_cents,
+                COALESCE(SUM(cashback_earned_cents), 0) as total_earned_cents,
+                COALESCE(SUM(cashback_paid_cents), 0) as total_paid_cents
+            FROM referrals
+            WHERE referrer_user_id = ? AND is_blacklisted = 0
+            """,
+            (referrer_id,),
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            return {
+                "referral_count": 0,
+                "total_spend_cents": 0,
+                "total_earned_cents": 0,
+                "total_paid_cents": 0,
+                "pending_cents": 0,
+            }
+
+        total_earned = row["total_earned_cents"]
+        total_paid = row["total_paid_cents"]
+        pending = total_earned - total_paid
+
+        return {
+            "referral_count": row["referral_count"],
+            "total_spend_cents": row["total_spend_cents"],
+            "total_earned_cents": total_earned,
+            "total_paid_cents": total_paid,
+            "pending_cents": pending,
+        }
+
+    async def calculate_pending_cashback(self, referrer_id: int) -> int:
+        """Calculate the pending (unpaid) cashback for a referrer.
+        
+        Args:
+            referrer_id: Discord ID of the referrer
+            
+        Returns:
+            Pending cashback amount in cents
+        """
+        stats = await self.get_referral_stats(referrer_id)
+        return stats["pending_cents"]
+
+    async def get_referrals(self, referrer_id: int) -> list[aiosqlite.Row]:
+        """Get all referrals for a user with details.
+        
+        Args:
+            referrer_id: Discord ID of the referrer
+            
+        Returns:
+            List of referral records
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT *
+            FROM referrals
+            WHERE referrer_user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (referrer_id,),
+        )
+        return await cursor.fetchall()
+
+    async def blacklist_referral_user(self, user_id: int) -> bool:
+        """Mark a user as blacklisted for referrals.
+        
+        Args:
+            user_id: Discord ID of the user to blacklist
+            
+        Returns:
+            True if user was blacklisted, False if no referral records found
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            UPDATE referrals
+            SET is_blacklisted = 1
+            WHERE referrer_user_id = ?
+            """,
+            (user_id,),
+        )
+        await self._connection.commit()
+        
+        return cursor.rowcount > 0
+
+    async def get_referrer_for_user(self, referred_id: int) -> Optional[int]:
+        """Get the referrer Discord ID for a referred user.
+        
+        Args:
+            referred_id: Discord ID of the referred user
+            
+        Returns:
+            Discord ID of the referrer, or None if user wasn't referred
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT referrer_user_id
+            FROM referrals
+            WHERE referred_user_id = ?
+            """,
+            (referred_id,),
+        )
+        row = await cursor.fetchone()
+        return row["referrer_user_id"] if row else None
