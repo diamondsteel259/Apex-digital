@@ -19,7 +19,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 9
+        self.target_schema_version = 10
 
     async def connect(self) -> None:
         if self._connection is None:
@@ -89,6 +89,7 @@ class Database:
             7: ("transcripts_table", self._migration_v7),
             8: ("ticket_counter_table", self._migration_v8),
             9: ("refunds_table", self._migration_v9),
+            10: ("reviews_table", self._migration_v10),
         }
 
         for version in sorted(migrations.keys()):
@@ -514,6 +515,63 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_refunds_status
                 ON refunds(status)
+            """
+        )
+
+        await self._connection.commit()
+
+    async def _migration_v10(self) -> None:
+        """Migration v10: Create reviews table for user feedback and approval workflow."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                product_id INTEGER,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                feedback_text TEXT NOT NULL CHECK (length(feedback_text) >= 50),
+                photo_proof_url TEXT,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+                approved_by_staff_id INTEGER,
+                approved_at TIMESTAMP,
+                rejected_reason TEXT,
+                helpful_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(approved_by_staff_id) REFERENCES users(discord_id) ON DELETE SET NULL
+            )
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reviews_user
+                ON reviews(user_discord_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reviews_product
+                ON reviews(product_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reviews_status
+                ON reviews(status)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_user_product
+                ON reviews(user_discord_id, product_id) WHERE product_id IS NOT NULL
             """
         )
 
@@ -2026,3 +2084,228 @@ class Database:
             (order_id, user_discord_id, max_days),
         )
         return await cursor.fetchone()
+
+    # Reviews methods
+    async def create_review(
+        self,
+        user_discord_id: int,
+        product_id: Optional[int],
+        rating: int,
+        feedback_text: str,
+        photo_proof_url: Optional[str] = None,
+    ) -> int:
+        """Create a new review."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO reviews (
+                user_discord_id, product_id, rating, feedback_text, photo_proof_url
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_discord_id, product_id, rating, feedback_text, photo_proof_url),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def approve_review(self, review_id: int, staff_discord_id: int) -> None:
+        """Approve a review."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            UPDATE reviews 
+            SET status = 'approved',
+                approved_by_staff_id = ?,
+                approved_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status = 'pending'
+            """,
+            (staff_discord_id, review_id),
+        )
+        await self._connection.commit()
+
+    async def reject_review(
+        self, review_id: int, staff_discord_id: int, rejection_reason: str
+    ) -> None:
+        """Reject a review."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            UPDATE reviews 
+            SET status = 'rejected',
+                approved_by_staff_id = ?,
+                rejected_reason = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (staff_discord_id, rejection_reason, review_id),
+        )
+        await self._connection.commit()
+
+    async def delete_review(self, review_id: int) -> None:
+        """Delete a review."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            "DELETE FROM reviews WHERE id = ?",
+            (review_id,),
+        )
+        await self._connection.commit()
+
+    async def get_user_reviews(self, user_discord_id: int) -> list[aiosqlite.Row]:
+        """Get all reviews for a user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT r.*, p.service_name, p.variant_name
+            FROM reviews r
+            LEFT JOIN products p ON r.product_id = p.id
+            WHERE r.user_discord_id = ?
+            ORDER BY r.created_at DESC
+            """,
+            (user_discord_id,),
+        )
+        return await cursor.fetchall()
+
+    async def get_pending_reviews(self) -> list[aiosqlite.Row]:
+        """Get all pending reviews for admin approval."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT r.*, p.service_name, p.variant_name
+            FROM reviews r
+            LEFT JOIN products p ON r.product_id = p.id
+            WHERE r.status = 'pending'
+            ORDER BY r.created_at ASC
+            """
+        )
+        return await cursor.fetchall()
+
+    async def count_user_approved_reviews(self, user_discord_id: int) -> int:
+        """Count approved reviews for a user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            "SELECT COUNT(*) as count FROM reviews WHERE user_discord_id = ? AND status = 'approved'",
+            (user_discord_id,),
+        )
+        row = await cursor.fetchone()
+        return row["count"] if row else 0
+
+    async def get_review_by_id(self, review_id: int) -> Optional[aiosqlite.Row]:
+        """Get a specific review by ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT r.*, p.service_name, p.variant_name
+            FROM reviews r
+            LEFT JOIN products p ON r.product_id = p.id
+            WHERE r.id = ?
+            """,
+            (review_id,),
+        )
+        return await cursor.fetchone()
+
+    async def check_user_can_review_product(
+        self, user_discord_id: int, product_id: int
+    ) -> bool:
+        """Check if user has purchased the product and hasn't already reviewed it."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Check if user has purchased the product
+        cursor = await self._connection.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM orders o
+            WHERE o.user_discord_id = ? AND o.product_id = ? AND o.status IN ('fulfilled', 'refill')
+            """,
+            (user_discord_id, product_id),
+        )
+        order_row = await cursor.fetchone()
+        if not order_row or order_row["count"] == 0:
+            return False
+
+        # Check if user has already reviewed this product
+        cursor = await self._connection.execute(
+            "SELECT COUNT(*) as count FROM reviews WHERE user_discord_id = ? AND product_id = ?",
+            (user_discord_id, product_id),
+        )
+        review_row = await cursor.fetchone()
+        return review_row["count"] == 0
+
+    async def check_user_review_cooldown(self, user_discord_id: int, days: int = 7) -> bool:
+        """Check if user is on review cooldown (days since last review)."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM reviews 
+            WHERE user_discord_id = ? 
+              AND created_at >= datetime('now', '-' || ? || ' days')
+            """,
+            (user_discord_id, days),
+        )
+        row = await cursor.fetchone()
+        return row["count"] == 0
+
+    async def get_all_reviews(
+        self, status: Optional[str] = None, limit: int = 50, offset: int = 0
+    ) -> list[aiosqlite.Row]:
+        """Get all reviews, optionally filtered by status."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        if status:
+            cursor = await self._connection.execute(
+                """
+                SELECT r.*, p.service_name, p.variant_name
+                FROM reviews r
+                LEFT JOIN products p ON r.product_id = p.id
+                WHERE r.status = ?
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (status, limit, offset),
+            )
+        else:
+            cursor = await self._connection.execute(
+                """
+                SELECT r.*, p.service_name, p.variant_name
+                FROM reviews r
+                LEFT JOIN products p ON r.product_id = p.id
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        return await cursor.fetchall()
+
+    async def has_completed_purchases(self, user_discord_id: int) -> bool:
+        """Check if user has any completed purchases."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM orders
+            WHERE user_discord_id = ? AND status IN ('fulfilled', 'refill')
+            """,
+            (user_discord_id,),
+        )
+        row = await cursor.fetchone()
+        return row["count"] > 0 if row else False

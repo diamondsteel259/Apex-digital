@@ -40,6 +40,10 @@ async def get_user_roles(user_id: int, db: Database, config: Config) -> list[Rol
     has_client_role = bool(user["has_client_role"])
     manually_assigned = await db.get_manually_assigned_roles(user_id)
 
+    # Check if user has approved reviews for Apex Insider role
+    approved_review_count = await db.count_user_approved_reviews(user_id)
+    has_approved_reviews = approved_review_count > 0
+
     # First pass: get all non-zenith roles
     for role in config.roles:
         if role.assignment_mode == "automatic_all_ranks":
@@ -58,7 +62,11 @@ async def get_user_roles(user_id: int, db: Database, config: Config) -> list[Rol
 
         # Check manual roles
         elif role.assignment_mode == "manual":
-            if role.name in manually_assigned:
+            # Special handling for Apex Insider - grant based on approved reviews
+            if role.name == "Apex Insider":
+                if has_approved_reviews:
+                    applicable_roles.append(role)
+            elif role.name in manually_assigned:
                 applicable_roles.append(role)
 
     # Second pass: check automatic_all_ranks (Zenith) - must have all other roles

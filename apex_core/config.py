@@ -52,6 +52,7 @@ class LoggingChannels:
     payments: int
     tickets: int
     errors: int
+    vouches: int | None = None
     order_logs: int | None = None
     transcript_archive: int | None = None
 
