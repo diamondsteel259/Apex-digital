@@ -197,20 +197,21 @@ class NotificationsCog(commands.Cog):
     @app_commands.command(name="test-warranty-notification", description="Test warranty notification system (admin only)")
     async def test_warranty_notification(self, interaction: discord.Interaction) -> None:
         """Manually trigger the warranty notification check for testing."""
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
         if interaction.guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
         requester = interaction.user
         if not isinstance(requester, discord.Member) or not self._is_admin(requester):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Only admins can test the warranty notification system.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             # Manually trigger the notification task

@@ -119,27 +119,28 @@ class OrdersCog(commands.Cog):
         member: Optional[discord.Member] = None,
         page: int = 1,
     ) -> None:
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
         if interaction.guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
         requester = self._resolve_member(interaction)
         if requester is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unable to resolve your member profile.", ephemeral=True
             )
             return
 
         target = member or requester
         if member and not self._is_admin(requester):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Only admins can view other members' orders.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         if page < 1:
             page = 1

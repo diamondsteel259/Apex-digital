@@ -135,14 +135,15 @@ class ProductImportCog(commands.Cog):
         csv_file: discord.Attachment,
     ) -> None:
         """Import products from a CSV file."""
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
         member = self._resolve_member(interaction)
         if not self._is_admin(member):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You do not have permission to use this command.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         if not csv_file.filename.lower().endswith('.csv'):
             await interaction.followup.send(

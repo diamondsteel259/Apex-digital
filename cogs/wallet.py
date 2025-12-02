@@ -179,15 +179,18 @@ class WalletCog(commands.Cog):
 
     @app_commands.command(name="deposit", description="Open a private deposit ticket with staff.")
     async def deposit(self, interaction: discord.Interaction) -> None:
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
         if interaction.guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command can only be used inside a server.", ephemeral=True
             )
             return
 
         member = self._resolve_member(interaction)
         if member is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unable to resolve your member profile. Please try again.", ephemeral=True
             )
             return
@@ -196,12 +199,10 @@ class WalletCog(commands.Cog):
             payment_methods = self._get_payment_methods(REQUIRED_PAYMENT_METHODS)
         except RuntimeError as exc:
             logger.error("Deposit command blocked: %s", exc)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Deposit methods are not configured. Please contact staff.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
         await self.bot.db.ensure_user(member.id)
 
         existing_ticket = await self.bot.db.get_open_ticket_for_user(member.id)
@@ -345,20 +346,21 @@ class WalletCog(commands.Cog):
         reason: str,
         notify_user: bool = True,
     ) -> None:
+        # Defer immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
         if interaction.guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
         requester = self._resolve_member(interaction)
         if not self._is_admin(requester):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You do not have permission to use this command.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             cents = self._to_cents(amount)
