@@ -51,6 +51,38 @@ class SetupMenuView(discord.ui.View):
         self.add_item(SetupMenuSelect())
 
 
+class ContinueSetupButton(discord.ui.Button):
+    """Button to continue setting up next panel."""
+    
+    def __init__(self, panel_type: str, user_id: int) -> None:
+        super().__init__(
+            label=f"Continue: Setup {panel_type.title()} Panel",
+            style=discord.ButtonStyle.primary,
+            emoji="▶️"
+        )
+        self.panel_type = panel_type
+        self.user_id = user_id
+    
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "You can't use this button.", ephemeral=True
+            )
+            return
+        
+        # Show the modal for the next panel
+        modal = ChannelInputModal(self.panel_type)
+        await interaction.response.send_modal(modal)
+
+
+class ContinueSetupView(discord.ui.View):
+    """View with button to continue multi-panel setup."""
+    
+    def __init__(self, panel_type: str, user_id: int) -> None:
+        super().__init__(timeout=300)
+        self.add_item(ContinueSetupButton(panel_type, user_id))
+
+
 class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
     """Modal for users to input the channel destination."""
     
@@ -61,6 +93,12 @@ class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
         max_length=100,
     )
 
+    def __init__(self, panel_type: str) -> None:
+        super().__init__()
+        self.panel_type = panel_type
+        # Update title to show which panel we're setting up
+        self.title = f"Deploy {panel_type.title()} Panel"
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         cog: SetupCog = interaction.client.get_cog("SetupCog")  # type: ignore
@@ -68,7 +106,7 @@ class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
             await interaction.followup.send("Setup cog not loaded.", ephemeral=True)
             return
 
-        await cog._process_channel_input(interaction, self.channel_input.value)
+        await cog._process_channel_input(interaction, self.channel_input.value, self.panel_type)
 
 
 class PanelTypeModal(discord.ui.Modal, title="Select Panel Type"):
@@ -411,50 +449,25 @@ class SetupCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
         if selection == "all":
             panel_types = ["products", "support", "help", "reviews"]
         else:
             panel_types = [selection]
 
+        # Store state before showing modal
         self.user_states[interaction.user.id] = {
             "panel_types": panel_types,
             "guild_id": interaction.guild.id,
             "current_index": 0,
         }
 
-        await self._prompt_for_channel(interaction, 0, panel_types)
-
-    async def _prompt_for_channel(
-        self,
-        interaction: discord.Interaction,
-        index: int,
-        panel_types: list[str],
-    ) -> None:
-        """Prompt user for channel destination."""
-        if index >= len(panel_types):
-            await interaction.followup.send(
-                "✅ All panels deployed successfully!", ephemeral=True
-            )
-            if interaction.user.id in self.user_states:
-                del self.user_states[interaction.user.id]
-            return
-
-        panel_type = panel_types[index]
-        emoji = self._get_panel_emoji(panel_type)
-
-        await interaction.followup.send(
-            f"{emoji} Where should I deploy the **{panel_type.title()} Panel**?\n"
-            f"(Type channel name or #mention)",
-            ephemeral=True,
-        )
-
-        self.user_states[interaction.user.id]["current_index"] = index
-        self.user_states[interaction.user.id]["awaiting_channel"] = True
+        # Show modal for the first panel
+        first_panel = panel_types[0]
+        modal = ChannelInputModal(first_panel)
+        await interaction.response.send_modal(modal)
 
     async def _process_channel_input(
-        self, interaction: discord.Interaction, channel_input: str
+        self, interaction: discord.Interaction, channel_input: str, panel_type: str
     ) -> None:
         """Process channel input and deploy panel."""
         if interaction.guild is None:
@@ -490,7 +503,7 @@ class SetupCog(commands.Cog):
         state = self.user_states.get(interaction.user.id)
         if not state:
             await interaction.followup.send(
-                "Session expired. Please start over with `/setup`.",
+                "Session expired. Please start over with `!setup`.",
                 ephemeral=True,
             )
             return
@@ -504,7 +517,13 @@ class SetupCog(commands.Cog):
             )
             return
 
-        panel_type = panel_types[current_index]
+        # Use the panel_type from the modal (ensures consistency)
+        # but verify it matches what we expect
+        expected_panel = panel_types[current_index]
+        if panel_type != expected_panel:
+            logger.warning(
+                f"Panel type mismatch: modal={panel_type}, expected={expected_panel}. Using modal value."
+            )
 
         success = await self._deploy_panel(
             panel_type,
@@ -521,15 +540,34 @@ class SetupCog(commands.Cog):
             return
 
         emoji = self._get_panel_emoji(panel_type)
-        await interaction.followup.send(
-            f"{emoji} ✅ Deployed to {channel.mention}",
-            ephemeral=True,
-        )
-
-        await asyncio.sleep(1)
-
+        
+        # Update state for next panel
         state["current_index"] = current_index + 1
-        await self._prompt_for_channel(interaction, current_index + 1, panel_types)
+        next_index = current_index + 1
+        
+        # Check if there are more panels to deploy
+        if next_index < len(panel_types):
+            next_panel = panel_types[next_index]
+            next_emoji = self._get_panel_emoji(next_panel)
+            
+            # Send success message with button to continue
+            view = ContinueSetupView(next_panel, interaction.user.id)
+            await interaction.followup.send(
+                f"{emoji} ✅ Deployed to {channel.mention}\n\n"
+                f"{next_emoji} Ready to setup **{next_panel.title()} Panel** next!",
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            # All panels deployed
+            await interaction.followup.send(
+                f"{emoji} ✅ Deployed to {channel.mention}\n\n"
+                "🎉 All panels deployed successfully!",
+                ephemeral=True,
+            )
+            # Clean up state
+            if interaction.user.id in self.user_states:
+                del self.user_states[interaction.user.id]
 
     async def _show_deployment_menu(
         self, interaction: discord.Interaction, panel_type_input: str
