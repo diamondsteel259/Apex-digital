@@ -14,8 +14,6 @@ from apex_core.utils import create_embed, format_usd, render_operating_hours
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_PAYMENT_METHODS = ("Binance Pay", "Tip.cc", "Crypto Address")
-
 
 def _slugify(value: str, *, fallback: str = "value", max_length: int = 80) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", value.lower())
@@ -95,19 +93,33 @@ class WalletCog(commands.Cog):
             return interaction.guild.get_member(interaction.user.id)
         return None
 
-    def _get_payment_methods(self, required: Sequence[str]) -> list[PaymentMethod]:
+    def _get_all_enabled_payment_methods(self) -> list[PaymentMethod]:
+        """Get all enabled payment methods from configuration.
+        
+        Returns:
+            List of enabled payment methods.
+            
+        Raises:
+            RuntimeError: If no payment methods are configured.
+        """
         # Use payment settings if available, otherwise fall back to legacy payment methods
         if self.bot.config.payment_settings:
-            lookup = {method.name.lower(): method for method in self.bot.config.payment_settings.payment_methods}
+            all_methods = self.bot.config.payment_settings.payment_methods
         else:
-            lookup = {method.name.lower(): method for method in self.bot.config.payment_methods}
+            all_methods = self.bot.config.payment_methods
         
-        missing = [name for name in required if name.lower() not in lookup]
-        if missing:
+        # Filter for enabled payment methods
+        enabled_methods = [
+            method for method in all_methods 
+            if method.metadata.get("is_enabled", True) != False
+        ]
+        
+        if not enabled_methods:
             raise RuntimeError(
-                "Missing payment methods in configuration: " + ", ".join(missing)
+                "No payment methods are currently enabled. Please contact an admin."
             )
-        return [lookup[name.lower()] for name in required]
+        
+        return enabled_methods
 
     def _format_method_value(self, method: PaymentMethod) -> str:
         metadata = _metadata_lines(method.metadata)
@@ -193,7 +205,7 @@ class WalletCog(commands.Cog):
             return
 
         try:
-            payment_methods = self._get_payment_methods(REQUIRED_PAYMENT_METHODS)
+            payment_methods = self._get_all_enabled_payment_methods()
         except RuntimeError as exc:
             logger.error("Deposit command blocked: %s", exc)
             await interaction.response.send_message(
