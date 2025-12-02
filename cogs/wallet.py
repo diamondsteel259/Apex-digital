@@ -345,20 +345,20 @@ class WalletCog(commands.Cog):
         reason: str,
         notify_user: bool = True,
     ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         if interaction.guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
         requester = self._resolve_member(interaction)
         if not self._is_admin(requester):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You do not have permission to use this command.", ephemeral=True
             )
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             cents = self._to_cents(amount)
