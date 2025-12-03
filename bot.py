@@ -26,6 +26,19 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Check for optional dependencies
+try:
+    import chat_exporter
+    CHAT_EXPORTER_AVAILABLE = True
+except ImportError:
+    CHAT_EXPORTER_AVAILABLE = False
+
+try:
+    import boto3
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+
 
 class ApexCoreBot(commands.Bot):
     """Extended Bot class with database and config management."""
@@ -42,6 +55,19 @@ class ApexCoreBot(commands.Bot):
         
         self.storage.initialize()
         logger.info("Transcript storage initialized.")
+        
+        # Log optional dependency status
+        if CHAT_EXPORTER_AVAILABLE:
+            logger.info("✓ chat_exporter library available - enhanced transcript formatting enabled")
+        else:
+            logger.warning("⚠ chat_exporter library not found - basic transcript format will be used")
+            logger.warning("  Install with: pip install -r requirements-optional.txt")
+        
+        if BOTO3_AVAILABLE:
+            logger.info("✓ boto3 library available - S3 storage support enabled")
+        else:
+            logger.info("ℹ boto3 library not found - transcripts will be stored locally")
+            logger.info("  Install with: pip install -r requirements-optional.txt (for S3 support)")
 
         await self._load_cogs()
 

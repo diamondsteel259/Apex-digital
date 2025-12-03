@@ -1,0 +1,8 @@
+# Optional dependencies for enhanced functionality
+# Install with: pip install -r requirements-optional.txt
+
+# Chat transcript export with advanced formatting and styling
+chat-exporter>=2.8.0
+
+# AWS S3 storage for transcript archival
+boto3>=1.26.0
