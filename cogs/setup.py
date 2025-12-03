@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import Optional, Any, Dict, List
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -11,6 +14,46 @@ from discord.ext import commands
 from apex_core.utils import create_embed, format_usd
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RollbackInfo:
+    """Information needed for rollback operations."""
+    operation_type: str
+    panel_type: str
+    channel_id: Optional[int] = None
+    message_id: Optional[int] = None
+    panel_id: Optional[int] = None
+    guild_id: Optional[int] = None
+    user_id: Optional[int] = None
+    timestamp: datetime = None
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now(timezone.utc)
+
+
+@dataclass
+class WizardState:
+    """State tracking for multi-step setup wizard."""
+    user_id: int
+    guild_id: int
+    panel_types: List[str]
+    current_index: int
+    completed_panels: List[str]
+    rollback_stack: List[RollbackInfo]
+    started_at: datetime
+    
+    def __post_init__(self):
+        if self.started_at is None:
+            self.started_at = datetime.now(timezone.utc)
+
+
+class SetupOperationError(Exception):
+    """Custom exception for setup operation failures."""
+    def __init__(self, message: str, rollback_info: Optional[RollbackInfo] = None):
+        super().__init__(message)
+        self.rollback_info = rollback_info
 
 
 class SetupMenuSelect(discord.ui.Select["SetupMenuView"]):
@@ -187,13 +230,160 @@ class DeploymentSelectView(discord.ui.View):
 class SetupCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.user_states: dict[int, dict] = {}
+        self.user_states: dict[int, WizardState] = {}
+        self._rollback_lock = asyncio.Lock()
+        # Clean up expired states every 5 minutes
+        self.bot.loop.create_task(self._cleanup_expired_states())
 
     def _is_admin(self, member: discord.Member | None) -> bool:
         if member is None:
             return False
         admin_role_id = self.bot.config.role_ids.admin
         return any(role.id == admin_role_id for role in getattr(member, "roles", []))
+
+    @asynccontextmanager
+    async def _atomic_operation(self, operation_name: str):
+        """Context manager for atomic operations with automatic rollback."""
+        rollback_stack: List[RollbackInfo] = []
+        try:
+            yield rollback_stack
+        except Exception as e:
+            logger.error(f"Atomic operation '{operation_name}' failed: {e}")
+            await self._execute_rollback_stack(rollback_stack, f"Failed operation: {operation_name}")
+            raise
+
+    async def _execute_rollback_stack(self, rollback_stack: List[RollbackInfo], reason: str) -> None:
+        """Execute a stack of rollback operations."""
+        async with self._rollback_lock:
+            for rollback_info in reversed(rollback_stack):
+                try:
+                    await self._rollback_single_operation(rollback_info)
+                    logger.info(f"Rolled back {rollback_info.operation_type} for {rollback_info.panel_type}")
+                except Exception as e:
+                    logger.error(f"Failed to rollback {rollback_info.operation_type}: {e}")
+            
+            # Log the rollback operation
+            if rollback_stack:
+                await self._log_rollback_operation(rollback_stack, reason)
+
+    async def _rollback_single_operation(self, rollback_info: RollbackInfo) -> None:
+        """Rollback a single operation based on its type."""
+        if rollback_info.operation_type == "message_sent":
+            if rollback_info.channel_id and rollback_info.message_id:
+                channel = self.bot.get_channel(rollback_info.channel_id)
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        message = await channel.fetch_message(rollback_info.message_id)
+                        await message.delete()
+                    except discord.NotFound:
+                        pass  # Message already deleted
+                    except discord.Forbidden:
+                        logger.warning(f"No permission to delete message {rollback_info.message_id}")
+
+        elif rollback_info.operation_type == "panel_created":
+            if rollback_info.panel_id:
+                await self.bot.db.remove_panel(rollback_info.panel_id)
+
+        elif rollback_info.operation_type == "panel_updated":
+            # For updated panels, we can't easily rollback to the old message ID
+            # So we just log that this happened
+            logger.info(f"Panel update rollback for panel_id {rollback_info.panel_id} - manual cleanup may be needed")
+
+    async def _log_rollback_operation(self, rollback_stack: List[RollbackInfo], reason: str) -> None:
+        """Log rollback operations to audit channel."""
+        if not rollback_stack:
+            return
+
+        # Get guild from first rollback info
+        guild_id = rollback_stack[0].guild_id
+        if not guild_id:
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return
+
+        embed = create_embed(
+            title="🔄 Setup Rollback Executed",
+            description=f"**Reason:** {reason}\n**Operations Rolled Back:** {len(rollback_stack)}",
+            color=discord.Color.orange(),
+        )
+
+        for i, rollback_info in enumerate(rollback_stack[:5], 1):  # Limit to first 5 for embed size
+            embed.add_field(
+                name=f"{i}. {rollback_info.operation_type}",
+                value=f"Panel: {rollback_info.panel_type}\nTime: {rollback_info.timestamp.strftime('%H:%M:%S')}",
+                inline=False,
+            )
+
+        if len(rollback_stack) > 5:
+            embed.add_field(
+                name="Additional Operations",
+                value=f"... and {len(rollback_stack) - 5} more",
+                inline=False,
+            )
+
+        embed.set_footer(text="Apex Core • Setup Recovery")
+        
+        try:
+            audit_channel_id = self.bot.config.logging_channels.audit
+            if audit_channel_id:
+                audit_channel = guild.get_channel(audit_channel_id)
+                if isinstance(audit_channel, discord.TextChannel):
+                    await audit_channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Failed to log rollback: {e}")
+
+    async def _validate_operation_prerequisites(self, guild: discord.Guild, channel: discord.TextChannel) -> None:
+        """Validate that all prerequisites are met for setup operations."""
+        if not guild.me.guild_permissions.manage_channels:
+            raise SetupOperationError("Bot needs 'Manage Channels' permission")
+
+        if not channel.permissions_for(guild.me).send_messages:
+            raise SetupOperationError(f"Bot cannot send messages in {channel.mention}")
+        
+        if not channel.permissions_for(guild.me).embed_links:
+            raise SetupOperationError(f"Bot cannot embed links in {channel.mention}")
+
+        # Test database connection
+        try:
+            await self.bot.db.get_deployments(guild.id)
+        except Exception as e:
+            raise SetupOperationError(f"Database connection failed: {e}")
+
+    async def _cleanup_expired_states(self) -> None:
+        """Clean up expired wizard states."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Check every 5 minutes
+                current_time = datetime.now(timezone.utc)
+                expired_users = []
+
+                for user_id, state in self.user_states.items():
+                    # Expire after 30 minutes of inactivity
+                    if (current_time - state.started_at).total_seconds() > 1800:
+                        expired_users.append(user_id)
+
+                for user_id in expired_users:
+                    await self._cleanup_wizard_state(user_id, "Session expired")
+
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {e}")
+
+    async def _cleanup_wizard_state(self, user_id: int, reason: str) -> None:
+        """Clean up wizard state and rollback any incomplete operations."""
+        if user_id not in self.user_states:
+            return
+
+        state = self.user_states[user_id]
+        
+        # Rollback any incomplete operations
+        if state.rollback_stack:
+            await self._execute_rollback_stack(state.rollback_stack, f"Wizard cleanup: {reason}")
+        
+        # Remove state
+        del self.user_states[user_id]
+        logger.info(f"Cleaned up wizard state for user {user_id}: {reason}")
 
     async def _log_audit(self, guild: discord.Guild, action: str, details: str) -> None:
         """Log setup actions to audit channel."""
@@ -391,58 +581,100 @@ class SetupCog(commands.Cog):
         guild: discord.Guild,
         user_id: int,
     ) -> bool:
-        """Deploy a panel to a channel."""
-        try:
-            if panel_type == "products":
-                embed, view = await self._create_product_panel()
-                title = "Apex Core: Products"
-            elif panel_type == "support":
-                embed, view = await self._create_support_panel()
-                title = "Support Options"
-            elif panel_type == "help":
-                embed, view = await self._create_help_panel()
-                title = "How to Use Apex Core"
-            elif panel_type == "reviews":
-                embed, view = await self._create_reviews_panel()
-                title = "Share Your Experience"
-            else:
-                return False
+        """Deploy a panel to a channel with comprehensive error recovery."""
+        async with self._atomic_operation(f"deploy_panel_{panel_type}") as rollback_stack:
+            try:
+                # Validate prerequisites first
+                await self._validate_operation_prerequisites(guild, channel)
+                
+                # Step 1: Create embed and view
+                if panel_type == "products":
+                    embed, view = await self._create_product_panel()
+                    title = "Apex Core: Products"
+                elif panel_type == "support":
+                    embed, view = await self._create_support_panel()
+                    title = "Support Options"
+                elif panel_type == "help":
+                    embed, view = await self._create_help_panel()
+                    title = "How to Use Apex Core"
+                elif panel_type == "reviews":
+                    embed, view = await self._create_reviews_panel()
+                    title = "Share Your Experience"
+                else:
+                    raise SetupOperationError(f"Unknown panel type: {panel_type}")
 
-            message = await channel.send(embed=embed, view=view)
-
-            existing = await self.bot.db.get_panel_by_type_and_channel(
-                panel_type, channel.id, guild.id
-            )
-
-            if existing:
-                await self.bot.db.update_panel(existing["id"], message.id)
-            else:
-                await self.bot.db.deploy_panel(
+                # Step 2: Send message (track for rollback)
+                message = await channel.send(embed=embed, view=view)
+                rollback_info = RollbackInfo(
+                    operation_type="message_sent",
                     panel_type=panel_type,
-                    message_id=message.id,
                     channel_id=channel.id,
+                    message_id=message.id,
                     guild_id=guild.id,
-                    title=title,
-                    description=embed.description or "",
-                    created_by_staff_id=user_id,
+                    user_id=user_id,
+                )
+                rollback_stack.append(rollback_info)
+
+                # Step 3: Database operations
+                existing = await self.bot.db.get_panel_by_type_and_channel(
+                    panel_type, channel.id, guild.id
                 )
 
-            await self._log_audit(
-                guild,
-                f"Panel Deployed",
-                f"**Type:** {panel_type}\n**Channel:** {channel.mention}\n**Message:** {message.id}",
-            )
+                if existing:
+                    # Update existing panel
+                    await self.bot.db.update_panel(existing["id"], message.id)
+                    rollback_info_update = RollbackInfo(
+                        operation_type="panel_updated",
+                        panel_type=panel_type,
+                        panel_id=existing["id"],
+                        guild_id=guild.id,
+                        user_id=user_id,
+                    )
+                    rollback_stack.append(rollback_info_update)
+                else:
+                    # Create new panel
+                    panel_id = await self.bot.db.deploy_panel(
+                        panel_type=panel_type,
+                        message_id=message.id,
+                        channel_id=channel.id,
+                        guild_id=guild.id,
+                        title=title,
+                        description=embed.description or "",
+                        created_by_staff_id=user_id,
+                    )
+                    rollback_info_create = RollbackInfo(
+                        operation_type="panel_created",
+                        panel_type=panel_type,
+                        panel_id=panel_id,
+                        guild_id=guild.id,
+                        user_id=user_id,
+                    )
+                    rollback_stack.append(rollback_info_create)
 
-            return True
+                # Step 4: Log successful deployment
+                await self._log_audit(
+                    guild,
+                    f"Panel Deployed",
+                    f"**Type:** {panel_type}\n**Channel:** {channel.mention}\n**Message:** {message.id}",
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to deploy panel: {e}")
-            return False
+                # Clear rollback stack since operation succeeded
+                rollback_stack.clear()
+                return True
+
+            except SetupOperationError:
+                # Re-raise setup operations errors (already have rollback info)
+                raise
+            except Exception as e:
+                # Wrap other exceptions in SetupOperationError
+                raise SetupOperationError(f"Failed to deploy {panel_type} panel: {e}")
+
+        return False  # This should not be reached due to exception handling
 
     async def _handle_setup_selection(
         self, interaction: discord.Interaction, selection: str
     ) -> None:
-        """Handle the initial setup menu selection."""
+        """Handle the initial setup menu selection with error recovery."""
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
@@ -454,12 +686,20 @@ class SetupCog(commands.Cog):
         else:
             panel_types = [selection]
 
-        # Store state before showing modal
-        self.user_states[interaction.user.id] = {
-            "panel_types": panel_types,
-            "guild_id": interaction.guild.id,
-            "current_index": 0,
-        }
+        # Clean up any existing state for this user
+        if interaction.user.id in self.user_states:
+            await self._cleanup_wizard_state(interaction.user.id, "New session started")
+
+        # Create new wizard state
+        self.user_states[interaction.user.id] = WizardState(
+            user_id=interaction.user.id,
+            guild_id=interaction.guild.id,
+            panel_types=panel_types,
+            current_index=0,
+            completed_panels=[],
+            rollback_stack=[],
+            started_at=datetime.now(timezone.utc),
+        )
 
         # Show modal for the first panel
         first_panel = panel_types[0]
@@ -469,15 +709,34 @@ class SetupCog(commands.Cog):
     async def _process_channel_input(
         self, interaction: discord.Interaction, channel_input: str, panel_type: str
     ) -> None:
-        """Process channel input and deploy panel."""
+        """Process channel input and deploy panel with comprehensive error recovery."""
         if interaction.guild is None:
             await interaction.followup.send(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
-        channel = None
+        # Get user state
+        state = self.user_states.get(interaction.user.id)
+        if not state:
+            await interaction.followup.send(
+                "Session expired. Please start over with `!setup`.",
+                ephemeral=True,
+            )
+            return
 
+        # Validate state
+        current_index = state.get("current_index", 0) if isinstance(state, dict) else state.current_index
+        panel_types = state.get("panel_types", []) if isinstance(state, dict) else state.panel_types
+
+        if current_index >= len(panel_types):
+            await interaction.followup.send(
+                "Setup complete!", ephemeral=True
+            )
+            return
+
+        # Find the channel
+        channel = None
         if channel_input.startswith("#"):
             channel_input = channel_input[1:]
 
@@ -493,27 +752,12 @@ class SetupCog(commands.Cog):
             )
             return
 
-        if not channel.permissions_for(interaction.guild.me).send_messages:
+        # Validate permissions
+        try:
+            await self._validate_operation_prerequisites(interaction.guild, channel)
+        except SetupOperationError as e:
             await interaction.followup.send(
-                f"❌ I don't have permission to send messages in {channel.mention}.",
-                ephemeral=True,
-            )
-            return
-
-        state = self.user_states.get(interaction.user.id)
-        if not state:
-            await interaction.followup.send(
-                "Session expired. Please start over with `!setup`.",
-                ephemeral=True,
-            )
-            return
-
-        current_index = state.get("current_index", 0)
-        panel_types = state.get("panel_types", [])
-
-        if current_index >= len(panel_types):
-            await interaction.followup.send(
-                "Setup complete!", ephemeral=True
+                f"❌ {str(e)}", ephemeral=True
             )
             return
 
@@ -525,49 +769,77 @@ class SetupCog(commands.Cog):
                 f"Panel type mismatch: modal={panel_type}, expected={expected_panel}. Using modal value."
             )
 
-        success = await self._deploy_panel(
-            panel_type,
-            channel,
-            interaction.guild,
-            interaction.user.id,
-        )
-
-        if not success:
-            await interaction.followup.send(
-                f"❌ Failed to deploy {panel_type} panel. Please try again.",
-                ephemeral=True,
+        # Deploy the panel with error handling
+        try:
+            success = await self._deploy_panel(
+                panel_type,
+                channel,
+                interaction.guild,
+                interaction.user.id,
             )
-            return
 
-        emoji = self._get_panel_emoji(panel_type)
-        
-        # Update state for next panel
-        state["current_index"] = current_index + 1
-        next_index = current_index + 1
-        
-        # Check if there are more panels to deploy
-        if next_index < len(panel_types):
-            next_panel = panel_types[next_index]
-            next_emoji = self._get_panel_emoji(next_panel)
+            if not success:
+                await interaction.followup.send(
+                    f"❌ Failed to deploy {panel_type} panel. Please try again.",
+                    ephemeral=True,
+                )
+                return
+
+            # Update wizard state
+            if isinstance(state, dict):
+                # Legacy state format - migrate to new format
+                state["current_index"] = current_index + 1
+                next_index = current_index + 1
+            else:
+                # New WizardState format
+                state.current_index = current_index + 1
+                state.completed_panels.append(panel_type)
+                next_index = state.current_index
+
+            emoji = self._get_panel_emoji(panel_type)
             
-            # Send success message with button to continue
-            view = ContinueSetupView(next_panel, interaction.user.id)
+            # Check if there are more panels to deploy
+            if next_index < len(panel_types):
+                next_panel = panel_types[next_index]
+                next_emoji = self._get_panel_emoji(next_panel)
+                
+                # Send success message with button to continue
+                view = ContinueSetupView(next_panel, interaction.user.id)
+                await interaction.followup.send(
+                    f"{emoji} ✅ Deployed to {channel.mention}\n\n"
+                    f"{next_emoji} Ready to setup **{next_panel.title()} Panel** next!",
+                    view=view,
+                    ephemeral=True,
+                )
+            else:
+                # All panels deployed
+                await interaction.followup.send(
+                    f"{emoji} ✅ Deployed to {channel.mention}\n\n"
+                    "🎉 All panels deployed successfully!",
+                    ephemeral=True,
+                )
+                # Clean up state
+                await self._cleanup_wizard_state(interaction.user.id, "Setup completed successfully")
+
+        except SetupOperationError as e:
+            error_msg = f"❌ Failed to deploy {panel_type} panel"
+            if "permission" in str(e).lower():
+                error_msg += f": {str(e)}"
+            else:
+                error_msg += ". The operation has been rolled back."
+            
+            await interaction.followup.send(error_msg, ephemeral=True)
+            
+            # Log the error for debugging
+            logger.error(f"Setup operation failed for user {interaction.user.id}: {e}")
+            
+        except Exception as e:
             await interaction.followup.send(
-                f"{emoji} ✅ Deployed to {channel.mention}\n\n"
-                f"{next_emoji} Ready to setup **{next_panel.title()} Panel** next!",
-                view=view,
+                f"❌ An unexpected error occurred while deploying the {panel_type} panel. "
+                "The operation has been rolled back.",
                 ephemeral=True,
             )
-        else:
-            # All panels deployed
-            await interaction.followup.send(
-                f"{emoji} ✅ Deployed to {channel.mention}\n\n"
-                "🎉 All panels deployed successfully!",
-                ephemeral=True,
-            )
-            # Clean up state
-            if interaction.user.id in self.user_states:
-                del self.user_states[interaction.user.id]
+            logger.error(f"Unexpected error in setup for user {interaction.user.id}: {e}")
 
     async def _show_deployment_menu(
         self, interaction: discord.Interaction, panel_type_input: str
@@ -659,6 +931,297 @@ class SetupCog(commands.Cog):
 
         view = SetupMenuView()
         await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="setup-cleanup")
+    async def setup_cleanup(self, ctx: commands.Context) -> None:
+        """Clean up failed setup operations and orphaned states (Admin only)."""
+        if ctx.guild is None:
+            await ctx.send("This command can only be used in a server.")
+            return
+
+        member = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if not self._is_admin(member):
+            await ctx.send("Only admins can use this command.")
+            return
+
+        embed = create_embed(
+            title="🧹 Setup Cleanup Options",
+            description="Select what to clean up:",
+            color=discord.Color.blue(),
+        )
+
+        # Count active states
+        active_states = len(self.user_states)
+        embed.add_field(
+            name="Active Wizard States",
+            value=f"{active_states} user(s) have active setup sessions",
+            inline=False,
+        )
+
+        # Check for orphaned panels
+        try:
+            deployments = await self.bot.db.get_deployments(ctx.guild.id)
+            orphaned_count = 0
+            for deployment in deployments:
+                channel = ctx.guild.get_channel(deployment["channel_id"])
+                if not channel:
+                    orphaned_count += 1
+                else:
+                    try:
+                        await channel.fetch_message(deployment["message_id"])
+                    except discord.NotFound:
+                        orphaned_count += 1
+
+            embed.add_field(
+                name="Orphaned Panels",
+                value=f"{orphaned_count} panel(s) with missing channels/messages",
+                inline=False,
+            )
+        except Exception as e:
+            embed.add_field(
+                name="Database Error",
+                value=f"Could not check panels: {e}",
+                inline=False,
+            )
+
+        view = CleanupMenuView(ctx.guild.id, ctx.author.id)
+        await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="setup-status")
+    async def setup_status(self, ctx: commands.Context) -> None:
+        """Show current setup status and active sessions (Admin only)."""
+        if ctx.guild is None:
+            await ctx.send("This command can only be used in a server.")
+            return
+
+        member = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if not self._is_admin(member):
+            await ctx.send("Only admins can use this command.")
+            return
+
+        embed = create_embed(
+            title="📊 Setup Status Report",
+            description="Current system status",
+            color=discord.Color.green(),
+        )
+
+        # Active wizard states
+        if self.user_states:
+            active_sessions = []
+            for user_id, state in self.user_states.items():
+                user = self.bot.get_user(user_id)
+                username = user.name if user else f"User {user_id}"
+                
+                if isinstance(state, WizardState):
+                    progress = f"{state.current_index}/{len(state.panel_types)}"
+                    next_panel = state.panel_types[state.current_index] if state.current_index < len(state.panel_types) else "Complete"
+                    active_sessions.append(f"• {username}: {progress} (Next: {next_panel})")
+                else:
+                    # Legacy state format
+                    current = state.get("current_index", 0)
+                    total = len(state.get("panel_types", []))
+                    active_sessions.append(f"• {username}: {current}/{total} (Legacy format)")
+
+            embed.add_field(
+                name="Active Setup Sessions",
+                value="\n".join(active_sessions) if active_sessions else "None",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Active Setup Sessions",
+                value="None",
+                inline=False,
+            )
+
+        # Recent deployments
+        try:
+            deployments = await self.bot.db.get_deployments(ctx.guild.id)
+            if deployments:
+                deployment_info = []
+                for deployment in deployments[-5:]:  # Last 5 deployments
+                    channel = ctx.guild.get_channel(deployment["channel_id"])
+                    channel_name = channel.name if channel else f"Deleted Channel ({deployment['channel_id']})"
+                    deployment_info.append(
+                        f"• {deployment['type'].title()}: {channel_name} ({deployment['message_id']})"
+                    )
+                
+                embed.add_field(
+                    name="Recent Deployments",
+                    value="\n".join(deployment_info),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="Recent Deployments",
+                    value="No panels deployed",
+                    inline=False,
+                )
+        except Exception as e:
+            embed.add_field(
+                name="Database Status",
+                value=f"Error: {e}",
+                inline=False,
+            )
+
+        embed.set_footer(text="Apex Core • Setup Status")
+        await ctx.send(embed=embed)
+
+    async def _handle_cleanup_selection(
+        self, interaction: discord.Interaction, selection: str, guild_id: int, user_id: int
+    ) -> None:
+        """Handle cleanup selection with comprehensive error recovery."""
+        if interaction.user.id != user_id:
+            await interaction.response.send_message(
+                "You can't use this menu.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            await interaction.followup.send("Guild not found.", ephemeral=True)
+            return
+
+        try:
+            if selection == "expired_states":
+                cleaned_count = await self._cleanup_expired_states_manual()
+                await interaction.followup.send(
+                    f"✅ Cleaned up {cleaned_count} expired wizard states.", ephemeral=True
+                )
+
+            elif selection == "all_states":
+                cleaned_count = len(self.user_states)
+                for user_id in list(self.user_states.keys()):
+                    await self._cleanup_wizard_state(user_id, "Manual cleanup")
+                await interaction.followup.send(
+                    f"✅ Cleaned up {cleaned_count} wizard states.", ephemeral=True
+                )
+
+            elif selection == "orphaned_panels":
+                cleaned_count = await self._cleanup_orphaned_panels(guild)
+                await interaction.followup.send(
+                    f"✅ Cleaned up {cleaned_count} orphaned panels.", ephemeral=True
+                )
+
+            elif selection == "full_cleanup":
+                # Clean states first
+                states_cleaned = len(self.user_states)
+                for user_id in list(self.user_states.keys()):
+                    await self._cleanup_wizard_state(user_id, "Full cleanup")
+
+                # Then clean orphaned panels
+                panels_cleaned = await self._cleanup_orphaned_panels(guild)
+
+                await interaction.followup.send(
+                    f"✅ Full cleanup complete:\n"
+                    f"• {states_cleaned} wizard states cleaned\n"
+                    f"• {panels_cleaned} orphaned panels cleaned",
+                    ephemeral=True,
+                )
+
+            # Log the cleanup action
+            await self._log_audit(
+                guild,
+                f"Setup Cleanup: {selection}",
+                f"**Performed by:** {interaction.user.mention}\n**Action:** {selection}",
+            )
+
+        except Exception as e:
+            logger.error(f"Cleanup operation failed: {e}")
+            await interaction.followup.send(
+                f"❌ Cleanup failed: {e}", ephemeral=True
+            )
+
+    async def _cleanup_expired_states_manual(self) -> int:
+        """Manually clean up expired wizard states and return count."""
+        current_time = datetime.now(timezone.utc)
+        expired_users = []
+
+        for user_id, state in self.user_states.items():
+            # Expire after 30 minutes of inactivity
+            if (current_time - state.started_at).total_seconds() > 1800:
+                expired_users.append(user_id)
+
+        for user_id in expired_users:
+            await self._cleanup_wizard_state(user_id, "Manual expired cleanup")
+
+        return len(expired_users)
+
+    async def _cleanup_orphaned_panels(self, guild: discord.Guild) -> int:
+        """Clean up orphaned panels and return count."""
+        try:
+            deployments = await self.bot.db.get_deployments(guild.id)
+            orphaned_count = 0
+
+            for deployment in deployments:
+                channel = guild.get_channel(deployment["channel_id"])
+                if not channel:
+                    # Channel doesn't exist, remove from database
+                    await self.bot.db.remove_panel(deployment["id"])
+                    orphaned_count += 1
+                    logger.info(f"Removed orphaned panel {deployment['id']} - channel {deployment['channel_id']} not found")
+                else:
+                    try:
+                        # Try to fetch the message
+                        await channel.fetch_message(deployment["message_id"])
+                    except discord.NotFound:
+                        # Message doesn't exist, remove from database
+                        await self.bot.db.remove_panel(deployment["id"])
+                        orphaned_count += 1
+                        logger.info(f"Removed orphaned panel {deployment['id']} - message {deployment['message_id']} not found")
+                    except discord.Forbidden:
+                        # No permission to access message, consider it orphaned
+                        await self.bot.db.remove_panel(deployment["id"])
+                        orphaned_count += 1
+                        logger.warning(f"Removed orphaned panel {deployment['id']} - no permission to access message {deployment['message_id']}")
+
+            return orphaned_count
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup orphaned panels: {e}")
+            raise
+
+
+class CleanupMenuSelect(discord.ui.Select["CleanupMenuView"]):
+    """Select menu for cleanup options."""
+    
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(label="Clean Expired States", value="expired_states", emoji="1️⃣"),
+            discord.SelectOption(label="Clean All States", value="all_states", emoji="2️⃣"),
+            discord.SelectOption(label="Clean Orphaned Panels", value="orphaned_panels", emoji="3️⃣"),
+            discord.SelectOption(label="Full Cleanup", value="full_cleanup", emoji="4️⃣"),
+        ]
+        super().__init__(
+            placeholder="Select cleanup action...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: SetupCog = interaction.client.get_cog("SetupCog")  # type: ignore
+        if not cog:
+            await interaction.response.send_message(
+                "Setup cog not loaded.", ephemeral=True
+            )
+            return
+
+        selection = self.values[0]
+        view = self.view  # Get the parent view
+        await cog._handle_cleanup_selection(interaction, selection, view.guild_id, view.user_id)
+
+
+class CleanupMenuView(discord.ui.View):
+    """View for cleanup menu."""
+    
+    def __init__(self, guild_id: int, user_id: int) -> None:
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.add_item(CleanupMenuSelect())
 
 
 async def setup(bot: commands.Bot) -> None:
