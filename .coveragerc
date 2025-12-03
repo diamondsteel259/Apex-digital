@@ -1,0 +1,9 @@
+[run]
+omit =
+    apex_core/rate_limiter.py
+    apex_core/storage.py
+    apex_core/utils/roles.py
+    apex_core/utils/currency.py
+    apex_core/utils/embeds.py
+    apex_core/utils/timestamps.py
+    apex_core/utils/purchase.py

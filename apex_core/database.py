@@ -599,7 +599,11 @@ class Database:
             raise RuntimeError("Database connection not initialized.")
 
         async with self._wallet_lock:
-            await self._connection.execute("BEGIN IMMEDIATE;")
+            started_transaction = False
+            if not self._connection.in_transaction:
+                await self._connection.execute("BEGIN IMMEDIATE;")
+                started_transaction = True
+
             await self._connection.execute(
                 """
                 INSERT INTO users (discord_id, wallet_balance_cents)
@@ -621,7 +625,9 @@ class Database:
                 """,
                 (delta_cents, delta_cents, delta_cents, discord_id),
             )
-            await self._connection.commit()
+
+            if started_transaction:
+                await self._connection.commit()
 
             cursor = await self._connection.execute(
                 "SELECT wallet_balance_cents FROM users WHERE discord_id = ?",

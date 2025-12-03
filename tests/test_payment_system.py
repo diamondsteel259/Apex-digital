@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from apex_core.config import load_payment_settings, PaymentSettings, PaymentMethod
+from apex_core.config import load_payment_settings, PaymentSettings
 
 
 class TestPaymentsConfig:
@@ -238,3 +238,64 @@ class TestPaymentsConfig:
             assert full.metadata["extra"] == "additional info"
         finally:
             temp_path.unlink()
+
+
+@pytest.mark.asyncio
+async def test_wallet_payment_success_flow(db, product_factory, user_factory, mock_interaction):
+    user_id = await user_factory(mock_interaction.user.id, balance=5_000)
+    product_id = await product_factory(price_cents=2_500)
+
+    order_id, remaining_balance = await db.purchase_product(
+        user_discord_id=user_id,
+        product_id=product_id,
+        price_paid_cents=2_500,
+        discount_applied_percent=0.0,
+        order_metadata="{\"payment_method\": \"Wallet\"}",
+    )
+
+    assert remaining_balance == 2_500
+    orders = await db.get_orders_for_user(user_id)
+    assert orders[0]["id"] == order_id
+
+
+@pytest.mark.asyncio
+async def test_wallet_payment_failure_recovery(db, product_factory, user_factory):
+    user_id = await user_factory(6101, balance=500)
+    product_id = await product_factory(price_cents=1_000)
+
+    with pytest.raises(ValueError, match="Insufficient balance"):
+        await db.purchase_product(
+            user_discord_id=user_id,
+            product_id=product_id,
+            price_paid_cents=1_000,
+            discount_applied_percent=0.0,
+        )
+
+    user = await db.get_user(user_id)
+    assert user["wallet_balance_cents"] == 500
+    orders = await db.get_orders_for_user(user_id)
+    assert orders == []
+
+
+def test_payment_method_enabled_flag_is_preserved():
+    config_payload = {
+        "payment_methods": [
+            {
+                "name": "Proof",
+                "instructions": "Upload proof after paying",
+                "is_enabled": True,
+            }
+        ],
+        "order_confirmation_template": "#{order_id} {service_name} {variant_name} {price} {eta}",
+        "refund_policy": "3 days",
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(config_payload, f)
+        path = Path(f.name)
+
+    try:
+        settings = load_payment_settings(path)
+        assert settings.payment_methods[0].metadata["is_enabled"] is True
+    finally:
+        path.unlink()

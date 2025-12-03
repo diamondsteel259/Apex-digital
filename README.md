@@ -127,11 +127,21 @@ If you encounter issues with optional dependencies:
 
 ### Running Tests
 
-Automated tests are powered by `pytest` and `pytest-asyncio`. After installing the project requirements, run:
+The project ships with a comprehensive `pytest` suite (unit + integration) powered by `pytest-asyncio` and `pytest-cov`. Coverage is enforced at **80%** via `pytest.ini`, so all submissions must meet that bar.
 
-```bash
-pytest
-```
+- Run the full suite (unit + integration + coverage):
+
+  ```bash
+  pytest
+  ```
+
+- Focus on the end-to-end workflows only:
+
+  ```bash
+  pytest tests/integration
+  ```
+
+Coverage reports are printed to the terminal (term-missing) so you can quickly see which lines still need attention. Modules that require live Discord state (e.g., full cogs, storage backends, and rate limiting) are omitted via `.coveragerc` to keep the enforced threshold focused on testable, critical business logic.
 
 ## Configuration
 
@@ -241,9 +251,22 @@ apex-core/
 │   ├── notifications.py    # Background notifications
 │   └── ticket_management.py # Ticket lifecycle management
 └── tests/                  # Test suite
-    ├── test_payments_config.py # Payments configuration tests
-    ├── test_database.py    # Database layer tests
-    └── test_wallet_transactions.py # Wallet transaction tests
+    ├── __init__.py
+    ├── conftest.py
+    ├── integration/
+    │   ├── test_purchase_workflow.py
+    │   ├── test_referral_workflow.py
+    │   └── test_refund_workflow.py
+    ├── test_config.py
+    ├── test_database.py
+    ├── test_payment_system.py
+    ├── test_products_template.py
+    ├── test_referrals.py
+    ├── test_refunds.py
+    ├── test_storefront.py
+    ├── test_tickets.py
+    ├── test_vip_tiers.py
+    └── test_wallet.py
 ```
 
 ## Database Schema and Migrations

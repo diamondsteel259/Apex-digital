@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -66,3 +67,80 @@ def test_parse_timestamp_normalizes_to_utc(ticket_management_cog):
     assert result.tzinfo == timezone.utc
     assert result.hour == 10
     assert result.minute == 30
+
+
+@pytest.mark.asyncio
+async def test_ticket_counter_generates_unique_values(db, user_factory):
+    user_id = await user_factory(26000)
+
+    counts = await asyncio.gather(
+        *(db.get_next_ticket_count(user_id, "order") for _ in range(5))
+    )
+
+    assert sorted(counts) == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_with_counter_returns_sequence(db, user_factory):
+    user_id = await user_factory(26001)
+
+    first_ticket_id, first_counter = await db.create_ticket_with_counter(
+        user_discord_id=user_id,
+        channel_id=999100,
+        ticket_type="order",
+    )
+    assert first_ticket_id > 0
+    assert first_counter == 1
+
+    second_ticket_id, second_counter = await db.create_ticket_with_counter(
+        user_discord_id=user_id,
+        channel_id=999101,
+        ticket_type="order",
+    )
+    assert second_ticket_id > first_ticket_id
+    assert second_counter == 2
+
+
+@pytest.mark.asyncio
+async def test_touch_ticket_activity_updates_timestamp(db, user_factory):
+    user_id = await user_factory(26002)
+
+    ticket_id = await db.create_ticket(
+        user_discord_id=user_id,
+        channel_id=999102,
+        ticket_type="support",
+    )
+
+    await db._connection.execute(
+        "UPDATE tickets SET last_activity = '2000-01-01 00:00:00' WHERE id = ?",
+        (ticket_id,),
+    )
+    await db._connection.commit()
+
+    await db.touch_ticket_activity(999102)
+    ticket = await db.get_ticket_by_channel(999102)
+    assert ticket["last_activity"] != "2000-01-01 00:00:00"
+
+
+@pytest.mark.asyncio
+async def test_save_and_retrieve_transcripts(db, user_factory):
+    user_id = await user_factory(26003)
+
+    ticket_id = await db.create_ticket(
+        user_discord_id=user_id,
+        channel_id=999103,
+    )
+
+    transcript_id = await db.save_transcript(
+        ticket_id=ticket_id,
+        user_discord_id=user_id,
+        channel_id=999103,
+        storage_type="local",
+        storage_path="transcripts/ticket.html",
+        file_size_bytes=1024,
+    )
+    assert transcript_id > 0
+
+    transcript = await db.get_transcript_by_ticket_id(ticket_id)
+    assert transcript is not None
+    assert transcript["storage_path"] == "transcripts/ticket.html"
