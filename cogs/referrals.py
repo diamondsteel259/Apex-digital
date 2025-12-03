@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,7 @@ class ReferralsCog(commands.Cog):
             )
 
     @app_commands.command(name="profile", description="View your profile including referral stats.")
+    @rate_limit(cooldown=60, max_uses=5, per="user", config_key="profile")
     async def profile(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -167,6 +169,7 @@ class ReferralsCog(commands.Cog):
             )
 
     @app_commands.command(name="invites", description="View detailed statistics about your referrals.")
+    @rate_limit(cooldown=60, max_uses=3, per="user", config_key="invites")
     async def invites(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -236,6 +239,7 @@ class ReferralsCog(commands.Cog):
 
     @app_commands.command(name="setref", description="Set your referrer to earn them cashback on your purchases.")
     @app_commands.describe(referrer_code="The referral code from the person who invited you")
+    @rate_limit(cooldown=86400, max_uses=1, per="user", config_key="setref")
     async def setref(self, interaction: discord.Interaction, referrer_code: str) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 

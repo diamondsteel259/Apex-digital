@@ -131,5 +131,52 @@
     "enabled": true,
     "max_days": 3,
     "handling_fee_percent": 10.0
+  },
+  "rate_limits": {
+    "balance": {
+      "cooldown": 60,
+      "max_uses": 2,
+      "per": "user"
+    },
+    "wallet_payment": {
+      "cooldown": 300,
+      "max_uses": 3,
+      "per": "user"
+    },
+    "submitrefund": {
+      "cooldown": 3600,
+      "max_uses": 1,
+      "per": "user"
+    },
+    "setref": {
+      "cooldown": 86400,
+      "max_uses": 1,
+      "per": "user"
+    },
+    "refund_approve": {
+      "cooldown": 60,
+      "max_uses": 10,
+      "per": "user"
+    },
+    "manual_complete": {
+      "cooldown": 60,
+      "max_uses": 5,
+      "per": "user"
+    },
+    "orders": {
+      "cooldown": 60,
+      "max_uses": 5,
+      "per": "user"
+    },
+    "profile": {
+      "cooldown": 60,
+      "max_uses": 5,
+      "per": "user"
+    },
+    "invites": {
+      "cooldown": 60,
+      "max_uses": 3,
+      "per": "user"
+    }
   }
 }

@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
 if TYPE_CHECKING:
@@ -89,6 +90,7 @@ class RefundManagementCog(commands.Cog):
         amount="Requested refund amount in USD",
         reason="Detailed reason for refund request",
     )
+    @rate_limit(cooldown=3600, max_uses=1, per="user", config_key="submitrefund")
     async def submitrefund(
         self,
         interaction: discord.Interaction,
@@ -231,6 +233,7 @@ class RefundManagementCog(commands.Cog):
     # region Staff Commands
     @commands.command(name="refund-approve", aliases=["refund_approve"])
     @commands.has_permissions(administrator=True)
+    @rate_limit(cooldown=60, max_uses=10, per="user", config_key="refund_approve", admin_bypass=False)
     async def refund_approve(
         self,
         ctx: commands.Context,

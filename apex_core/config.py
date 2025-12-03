@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable
 
 CONFIG_PATH = Path("config.json")
 PAYMENTS_CONFIG_PATH = Path("config/payments.json")
@@ -37,6 +37,13 @@ class RefundSettings:
     enabled: bool
     max_days: int
     handling_fee_percent: float
+
+
+@dataclass(frozen=True)
+class RateLimitRule:
+    cooldown: int
+    max_uses: int
+    per: str
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,7 @@ class Config:
     logging_channels: LoggingChannels
     payment_settings: PaymentSettings | None = None
     refund_settings: RefundSettings | None = None
+    rate_limits: dict[str, RateLimitRule] = field(default_factory=dict)
     roles: list[Role] = field(default_factory=list)
     vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
@@ -154,6 +162,27 @@ def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | N
         max_days=int(payload.get("max_days", 3)),
         handling_fee_percent=float(payload.get("handling_fee_percent", 10.0)),
     )
+
+
+def _parse_rate_limits(payload: dict[str, Any] | None) -> dict[str, RateLimitRule]:
+    """Parse rate limit definitions from configuration."""
+    if not payload:
+        return {}
+    if not isinstance(payload, dict):
+        raise ValueError("rate_limits must be an object mapping command keys to settings")
+
+    limits: dict[str, RateLimitRule] = {}
+    for key, value in payload.items():
+        if not isinstance(value, dict):
+            raise ValueError(f"rate_limits entry for '{key}' must be an object")
+        try:
+            cooldown = int(value["cooldown"])
+            max_uses = int(value["max_uses"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"rate_limits entry for '{key}' must include integer cooldown and max_uses") from exc
+        per = str(value.get("per", "user")).lower()
+        limits[key] = RateLimitRule(cooldown=cooldown, max_uses=max_uses, per=per)
+    return limits
 
 
 def _validate_order_confirmation_template(template: str) -> None:
@@ -238,6 +267,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         payment_methods=_parse_payment_methods(data.get("payment_methods", [])),
         payment_settings=payment_settings,
         refund_settings=_parse_refund_settings(data.get("refund_settings")),
+        rate_limits=_parse_rate_limits(data.get("rate_limits")),
         roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),

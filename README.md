@@ -148,6 +148,7 @@ The `config.json` file contains core bot settings:
 - **payment_methods**: Legacy payment methods (kept for backward compatibility)
 - **vip_thresholds**: Spending thresholds for VIP tiers (in cents) and discount percentages
 - **logging_channels**: Channel IDs for logging audit, payments, tickets, errors, and optional transcript archives
+- **rate_limits** *(optional)*: Per-command overrides for cooldowns/max usage (see [Rate Limiting](#command-rate-limiting))
 
 ### Payments Configuration (`config/payments.json`)
 
@@ -156,6 +157,15 @@ The `config/payments.json` file contains payment-related settings:
 - **payment_methods**: List of accepted payment methods with instructions, emoji, and metadata
 - **order_confirmation_template**: Template for order confirmation messages with placeholders
 - **refund_policy**: Default refund policy string
+
+### Command Rate Limiting
+
+Sensitive operations (wallet payments, refunds, manual orders, etc.) are protected by the rate limiting system in `apex_core/rate_limiter.py`.
+
+- Use the `@rate_limit()` decorator on commands
+- Call `enforce_interaction_rate_limit()` for button callbacks (e.g., wallet payment button)
+- Configure overrides per command via the `rate_limits` section in `config.json`
+- Refer to [`RATE_LIMITING.md`](RATE_LIMITING.md) for detailed guidance, examples, and best practices
 
 #### Payment Method Structure
 
