@@ -26,8 +26,9 @@ from apex_core.utils import (
     operating_hours_window,
     render_operating_hours,
 )
+from apex_core.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 INACTIVITY_WARNING_HOURS = 48
 INACTIVITY_CLOSE_HOURS = 49

@@ -10,10 +10,11 @@ from discord import app_commands
 from discord.ext import commands
 
 from apex_core.config import PaymentMethod, PaymentSettings
+from apex_core.logger import get_logger
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd, render_operating_hours
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 def _slugify(value: str, *, fallback: str = "value", max_length: int = 80) -> str:
