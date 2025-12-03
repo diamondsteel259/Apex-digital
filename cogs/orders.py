@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
@@ -115,6 +116,7 @@ class OrdersCog(commands.Cog):
         page="Page number (10 orders per page)",
     )
     @rate_limit(cooldown=60, max_uses=5, per="user", config_key="orders")
+    @financial_cooldown()
     async def orders(
         self,
         interaction: discord.Interaction,
