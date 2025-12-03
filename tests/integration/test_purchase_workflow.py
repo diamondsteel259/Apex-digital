@@ -8,8 +8,8 @@ async def test_purchase_workflow_creates_order_and_updates_vip(db, product_facto
     user_id = await user_factory(7000, balance=30_000)
 
     await db._connection.execute(
-        "UPDATE users SET total_lifetime_spent_cents = 5_000 WHERE discord_id = ?",
-        (user_id,),
+        "UPDATE users SET total_lifetime_spent_cents = ? WHERE discord_id = ?",
+        (5000, user_id),
     )
     await db._connection.commit()
 
