@@ -2,6 +2,18 @@
 
 A feature-rich Discord bot for automated product distribution, ticketing, and VIP management.
 
+## 🚀 Quick Start
+
+**New to deployment?** Start with these guides:
+
+- **[QUICK_START_UBUNTU.md](QUICK_START_UBUNTU.md)** ⭐ - Step-by-step deployment guide for Ubuntu
+- **[DEPLOYMENT_SUMMARY.md](DEPLOYMENT_SUMMARY.md)** 📊 - Quick reference and deployment status
+- **[TESTING_CHECKLIST.md](TESTING_CHECKLIST.md)** ✅ - Comprehensive manual testing guide (300+ items)
+- **[UBUNTU_E2E_TEST_REPORT.md](UBUNTU_E2E_TEST_REPORT.md)** 📋 - Full E2E test execution report
+- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** 📚 - Complete documentation index and navigation guide
+
+**Production Status:** ✅ All 95 tests passing, 80.58% coverage - **READY FOR DEPLOYMENT**
+
 ## Features
 
 - **Automated Product Distribution**: SQLite-backed product catalog with role assignments and content delivery
