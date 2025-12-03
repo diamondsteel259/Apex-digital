@@ -1,0 +1,145 @@
+"""
+Enhanced logging module for Apex Core Discord bot.
+
+Provides centralized logging with Discord channel integration,
+structured logging, and enhanced features for production use.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import discord
+
+# Global logger instance
+logger: Optional[logging.Logger] = None
+
+
+class DiscordHandler(logging.Handler):
+    """Custom logging handler that sends messages to Discord channels."""
+    
+    def __init__(self, bot=None, channel_id: Optional[int] = None):
+        super().__init__()
+        self.bot = bot
+        self.channel_id = channel_id
+    
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit a log record to Discord channel if available."""
+        if self.bot and self.channel_id:
+            try:
+                import asyncio
+                channel = self.bot.get_channel(self.channel_id)
+                if channel:
+                    # Format the message for Discord
+                    msg = f"**{record.levelname}**: {record.getMessage()}"
+                    if hasattr(record, 'exc_info') and record.exc_info:
+                        msg += f"\n```{self.format(record)}```"
+                    
+                    # Create coroutine and run it
+                    async def send_message():
+                        try:
+                            await channel.send(msg)
+                        except Exception:
+                            # Fail silently to avoid infinite logging loops
+                            pass
+                    
+                    # Run the coroutine
+                    asyncio.create_task(send_message())
+            except Exception:
+                # Fail silently to avoid infinite logging loops
+                pass
+
+
+def setup_logger(
+    level: int = logging.INFO,
+    enable_discord: bool = False,
+    bot=None,
+    audit_channel_id: Optional[int] = None,
+    error_channel_id: Optional[int] = None
+) -> logging.Logger:
+    """
+    Set up the enhanced logger with console and optional Discord handlers.
+    
+    Args:
+        level: Logging level (default: INFO)
+        enable_discord: Whether to enable Discord channel logging
+        bot: Discord bot instance for channel logging
+        audit_channel_id: Channel ID for audit logs
+        error_channel_id: Channel ID for error logs
+    
+    Returns:
+        Configured logger instance
+    """
+    global logger
+    
+    # Create or get the logger
+    logger = logging.getLogger("apex_core")
+    logger.setLevel(level)
+    
+    # Remove existing handlers to avoid duplicates
+    logger.handlers.clear()
+    
+    # Console handler with nice formatting
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_formatter = logging.Formatter(
+        "[%(asctime)s] %(levelname)s:%(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # Discord handlers (if enabled)
+    if enable_discord and bot:
+        if audit_channel_id:
+            audit_handler = DiscordHandler(bot, audit_channel_id)
+            audit_handler.setLevel(logging.INFO)
+            # Only send audit logs, not debug/info
+            audit_handler.addFilter(lambda record: record.levelno >= logging.INFO and 'audit' in record.name.lower())
+            logger.addHandler(audit_handler)
+        
+        if error_channel_id:
+            error_handler = DiscordHandler(bot, error_channel_id)
+            error_handler.setLevel(logging.ERROR)
+            logger.addHandler(error_handler)
+    
+    # Prevent propagation to root logger to avoid duplicates
+    logger.propagate = False
+    
+    return logger
+
+
+def get_logger() -> logging.Logger:
+    """
+    Get the global logger instance.
+    
+    Returns:
+        Logger instance or creates a basic one if not initialized
+    """
+    global logger
+    if logger is None:
+        # Create a basic logger if setup_logger hasn't been called yet
+        logger = logging.getLogger("apex_core")
+        logger.setLevel(logging.INFO)
+        
+        # Only add console handler if none exist
+        if not logger.handlers:
+            handler = logging.StreamHandler(sys.stdout)
+            formatter = logging.Formatter(
+                "[%(asctime)s] %(levelname)s:%(name)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.propagate = False
+    
+    return logger
+
+
+# Initialize a basic logger for immediate use
+logger = get_logger()
+
+
+# For backward compatibility, provide module-level logger
+module_logger = get_logger()

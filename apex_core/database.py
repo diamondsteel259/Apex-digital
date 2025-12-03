@@ -9,7 +9,9 @@ from typing import Optional
 
 import aiosqlite
 
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+logger = get_logger()
 
 
 class Database:

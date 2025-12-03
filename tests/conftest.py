@@ -1,5 +1,6 @@
 import pytest
 import pytest_asyncio
+from unittest.mock import MagicMock, patch
 
 from apex_core.config import (
     Config,
@@ -14,6 +15,33 @@ from apex_core.config import (
     TicketCategories,
 )
 from apex_core.database import Database
+
+
+@pytest.fixture
+def mock_logger():
+    """Mock logger for test environment."""
+    logger = MagicMock()
+    logger.debug = MagicMock()
+    logger.info = MagicMock()
+    logger.warning = MagicMock()
+    logger.error = MagicMock()
+    logger.critical = MagicMock()
+    logger.addHandler = MagicMock()
+    logger.removeHandler = MagicMock()
+    logger.setLevel = MagicMock()
+    logger.handlers = []
+    logger.propagate = False
+    return logger
+
+
+@pytest.fixture(autouse=True)
+def setup_logger(mock_logger):
+    """Automatically inject mock logger into all tests."""
+    # Patch the enhanced logger module
+    with patch('apex_core.logger.logger', mock_logger), \
+         patch('apex_core.logger.get_logger', return_value=mock_logger), \
+         patch('apex_core.logger.setup_logger', return_value=mock_logger):
+        yield
 
 
 class MockDiscordRole:

@@ -15,16 +15,10 @@ import discord
 from discord.ext import commands
 
 from apex_core import load_config, load_payment_settings, Database, TranscriptStorage
+from apex_core.logger import setup_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s:%(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-
-logger = logging.getLogger(__name__)
+# Set up enhanced logger
+logger = setup_logger(level=logging.INFO)
 
 # Check for optional dependencies
 try:
@@ -55,6 +49,18 @@ class ApexCoreBot(commands.Bot):
         
         self.storage.initialize()
         logger.info("Transcript storage initialized.")
+        
+        # Set up Discord channel logging if channels are configured
+        if hasattr(self.config, 'logging_channels') and self.config.logging_channels:
+            from apex_core.logger import setup_logger
+            setup_logger(
+                level=logging.INFO,
+                enable_discord=True,
+                bot=self,
+                audit_channel_id=getattr(self.config.logging_channels, 'audit', None),
+                error_channel_id=getattr(self.config.logging_channels, 'errors', None)
+            )
+            logger.info("Discord channel logging enabled.")
         
         # Log optional dependency status
         if CHAT_EXPORTER_AVAILABLE:
