@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.rate_limiter import enforce_interaction_rate_limit
 from apex_core.utils import (
     calculate_vip_tier,
     create_embed,
@@ -406,6 +407,17 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
             await interaction.response.send_message(
                 "Storefront cog not loaded.", ephemeral=True
             )
+            return
+        
+        allowed = await enforce_interaction_rate_limit(
+            interaction,
+            command_key="wallet_payment",
+            cooldown=300,
+            max_uses=3,
+            per="user",
+            config_key="wallet_payment",
+        )
+        if not allowed:
             return
         
         await interaction.response.defer(ephemeral=True, thinking=True)
