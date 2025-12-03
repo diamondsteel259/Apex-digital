@@ -11,6 +11,7 @@ from discord.ext import commands
 
 from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
+from apex_core.user_cache_warmer import warm_user_cache
 from apex_core.utils import create_embed, format_usd
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,9 @@ class ReferralsCog(commands.Cog):
     @app_commands.command(name="profile", description="View your profile including referral stats.")
     @rate_limit(cooldown=60, max_uses=5, per="user", config_key="profile")
     async def profile(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
+        # Warm user cache on interaction
+        await warm_user_cache(interaction.user.id)
+        
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         target = member or interaction.user

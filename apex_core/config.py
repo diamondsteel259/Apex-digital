@@ -87,6 +87,17 @@ class TicketCategories:
 
 
 @dataclass(frozen=True)
+class CacheSettings:
+    enabled: bool
+    max_size_mb: int
+    ttl_config: int
+    ttl_reference: int
+    ttl_user: int
+    ttl_query: int
+    cleanup_interval: int
+
+
+@dataclass(frozen=True)
 class Config:
     token: str
     guild_ids: list[int]
@@ -102,6 +113,7 @@ class Config:
     roles: list[Role] = field(default_factory=list)
     vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
+    cache_settings: CacheSettings | None = None
 
 
 def _coerce_hour(value: Any, *, field_name: str) -> int:
@@ -205,6 +217,22 @@ def _parse_financial_cooldowns(payload: dict[str, Any] | None) -> dict[str, int]
     return cooldowns
 
 
+def _parse_cache_settings(payload: dict[str, Any] | None) -> CacheSettings | None:
+    """Parse cache settings from config payload."""
+    if not payload:
+        return None
+    
+    return CacheSettings(
+        enabled=bool(payload.get("enabled", True)),
+        max_size_mb=int(payload.get("max_size_mb", 100)),
+        ttl_config=int(payload.get("ttl_config", 86400)),  # 24 hours
+        ttl_reference=int(payload.get("ttl_reference", 43200)),  # 12 hours
+        ttl_user=int(payload.get("ttl_user", 3600)),  # 1 hour
+        ttl_query=int(payload.get("ttl_query", 1800)),  # 30 minutes
+        cleanup_interval=int(payload.get("cleanup_interval", 3600)),  # 1 hour
+    )
+
+
 def _validate_order_confirmation_template(template: str) -> None:
     """Validate that the order confirmation template contains required placeholders."""
     required_placeholders = {"{order_id}", "{service_name}", "{variant_name}", "{price}", "{eta}"}
@@ -292,4 +320,5 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),
+        cache_settings=_parse_cache_settings(data.get("cache")),
     )

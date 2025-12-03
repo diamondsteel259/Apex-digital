@@ -179,6 +179,15 @@
       "per": "user"
     }
   },
+  "cache": {
+    "enabled": true,
+    "max_size_mb": 100,
+    "ttl_config": 86400,
+    "ttl_reference": 43200,
+    "ttl_user": 3600,
+    "ttl_query": 1800,
+    "cleanup_interval": 3600
+  },
   "financial_cooldowns": {
     "wallet_payment": 30,
     "submitrefund": 300,

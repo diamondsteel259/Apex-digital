@@ -13,6 +13,7 @@ from apex_core.config import PaymentMethod, PaymentSettings
 from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.logger import get_logger
 from apex_core.rate_limiter import rate_limit
+from apex_core.user_cache_warmer import warm_user_cache
 from apex_core.utils import create_embed, format_usd, render_operating_hours
 
 logger = get_logger()
@@ -271,6 +272,9 @@ class WalletCog(commands.Cog):
         interaction: discord.Interaction,
         member: discord.Member | None = None,
     ) -> None:
+        # Warm user cache on interaction
+        await warm_user_cache(interaction.user.id)
+        
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True

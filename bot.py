@@ -15,8 +15,11 @@ import discord
 from discord.ext import commands
 
 from apex_core import load_config, load_payment_settings, Database, TranscriptStorage
+from apex_core.cache_manager import get_cache_manager
+from apex_core.cache_warmer import warm_cache_on_startup
 from apex_core.financial_cooldown_manager import get_financial_cooldown_manager
 from apex_core.logger import setup_logger
+from apex_core.user_cache_warmer import initialize_user_cache_warmer
 
 # Set up enhanced logger
 logger = setup_logger(level=logging.INFO)
@@ -42,6 +45,7 @@ class ApexCoreBot(commands.Bot):
         self.config = kwargs.pop("config")
         self.db = Database()
         self.storage = TranscriptStorage()
+        self.cache_manager = get_cache_manager()
         super().__init__(*args, **kwargs)
 
     async def setup_hook(self):
@@ -50,6 +54,19 @@ class ApexCoreBot(commands.Bot):
         
         self.storage.initialize()
         logger.info("Transcript storage initialized.")
+        
+        # Initialize cache manager if enabled
+        if self.config.cache_settings and self.config.cache_settings.enabled:
+            await self.cache_manager.start()
+            logger.info(f"Cache manager started: {self.config.cache_settings.max_size_mb}MB max size")
+            
+            # Warm up cache with essential data
+            await warm_cache_on_startup(self.db, self.config)
+            
+            # Initialize user cache warmer
+            initialize_user_cache_warmer(self.db, self.config)
+        else:
+            logger.info("Cache manager disabled in configuration")
         
         # Set up Discord channel logging if channels are configured
         if hasattr(self.config, 'logging_channels') and self.config.logging_channels:
@@ -106,6 +123,11 @@ class ApexCoreBot(commands.Bot):
         logger.info("Apex Core is ready!")
 
     async def close(self):
+        # Stop cache manager
+        if hasattr(self, 'cache_manager'):
+            await self.cache_manager.stop()
+            logger.info("Cache manager stopped.")
+        
         await self.db.close()
         logger.info("Database connection closed.")
         await super().close()

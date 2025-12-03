@@ -9,6 +9,7 @@ from typing import Optional
 
 import aiosqlite
 
+from .cache_manager import cached, cache_invalidate
 from .logger import get_logger
 
 logger = get_logger()
@@ -586,6 +587,7 @@ class Database:
             raise RuntimeError("Failed to create or retrieve user record.")
         return row
 
+    @cached(ttl=3600, key_prefix="user")
     async def get_user(self, discord_id: int) -> Optional[aiosqlite.Row]:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
@@ -596,6 +598,7 @@ class Database:
         )
         return await cursor.fetchone()
 
+    @cache_invalidate(["user::{discord_id}::*"])
     async def update_wallet_balance(self, discord_id: int, delta_cents: int) -> int:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
@@ -808,6 +811,7 @@ class Database:
         await self._connection.commit()
         return cursor.lastrowid
 
+    @cached(ttl=43200, key_prefix="discounts")
     async def get_applicable_discounts(
         self,
         *,
@@ -835,6 +839,7 @@ class Database:
         )
         return await cursor.fetchall()
 
+    @cached(ttl=43200, key_prefix="products")
     async def get_all_products(self, *, active_only: bool = True) -> list[aiosqlite.Row]:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
@@ -847,6 +852,7 @@ class Database:
         cursor = await self._connection.execute(query)
         return await cursor.fetchall()
 
+    @cached(ttl=43200, key_prefix="categories")
     async def get_distinct_main_categories(self) -> list[str]:
         """Get all distinct main_category values from active products, sorted alphabetically."""
         if self._connection is None:
@@ -863,6 +869,7 @@ class Database:
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
 
+    @cached(ttl=43200, key_prefix="categories")
     async def get_distinct_sub_categories(self, main_category: str) -> list[str]:
         """Get all distinct sub_category values for a main_category from active products, sorted alphabetically."""
         if self._connection is None:
@@ -880,6 +887,7 @@ class Database:
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
 
+    @cached(ttl=43200, key_prefix="products")
     async def get_products_by_category(
         self, main_category: str, sub_category: str
     ) -> list[aiosqlite.Row]:
@@ -921,6 +929,7 @@ class Database:
         )
         return await cursor.fetchone()
 
+    @cache_invalidate(["products:*", "categories:*"])
     async def update_product(
         self,
         product_id: int,
@@ -1567,6 +1576,7 @@ class Database:
             await self._connection.rollback()
             raise
 
+    @cache_invalidate(["user::{user_discord_id}::*", "user_orders::{user_discord_id}::*"])
     async def purchase_product(
         self,
         *,
@@ -1660,6 +1670,7 @@ class Database:
 
             return order_id, new_balance
 
+    @cached(ttl=1800, key_prefix="user_orders")
     async def get_orders_for_user(
         self,
         user_discord_id: int,

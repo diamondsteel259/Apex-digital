@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from apex_core.rate_limiter import enforce_interaction_rate_limit
+from apex_core.user_cache_warmer import warm_user_cache
 from apex_core.utils import (
     calculate_vip_tier,
     create_embed,
@@ -332,6 +333,9 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
         self.sub_category = sub_category
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Warm user cache on interaction
+        await warm_user_cache(interaction.user.id)
+        
         cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")  # type: ignore
         if not cog:
             await interaction.response.send_message(
@@ -838,6 +842,9 @@ class StorefrontCog(commands.Cog):
     async def _show_sub_categories(
         self, interaction: discord.Interaction, main_category: str
     ) -> None:
+        # Warm user cache on interaction
+        await warm_user_cache(interaction.user.id)
+        
         sub_categories = await self.bot.db.get_distinct_sub_categories(main_category)
         
         if not sub_categories:
