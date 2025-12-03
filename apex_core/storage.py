@@ -7,6 +7,13 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,10 +40,17 @@ class TranscriptStorage:
 
     def _initialize_s3(self) -> None:
         """Initialize S3 client."""
+        if not BOTO3_AVAILABLE:
+            logger.warning(
+                "⚠️ S3 storage unavailable. boto3 is not installed. "
+                "Install with: pip install -r requirements-optional.txt"
+            )
+            logger.warning("Falling back to local transcript storage.")
+            self.storage_type = "local"
+            self._initialize_local()
+            return
+        
         try:
-            import boto3
-            from botocore.exceptions import ClientError
-            
             if not all([self.s3_bucket, self.s3_access_key, self.s3_secret_key]):
                 raise RuntimeError(
                     "S3 storage requires S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY environment variables"
@@ -52,10 +66,6 @@ class TranscriptStorage:
             self._s3_client.head_bucket(Bucket=self.s3_bucket)
             logger.info(f"Initialized S3 storage: bucket={self.s3_bucket}, region={self.s3_region}")
             
-        except ImportError:
-            raise RuntimeError(
-                "boto3 is required for S3 storage. Install with: pip install boto3"
-            )
         except ClientError as e:
             raise RuntimeError(f"Failed to initialize S3 storage: {e}")
 
@@ -125,8 +135,13 @@ class TranscriptStorage:
         file_size: int,
     ) -> Tuple[str, int]:
         """Save transcript to S3."""
+        if not BOTO3_AVAILABLE or not self._s3_client:
+            logger.warning(
+                "S3 storage not available. Falling back to local storage for: %s", filename
+            )
+            return await self._save_to_local(filename, content_bytes, file_size)
+        
         try:
-            from botocore.exceptions import ClientError
             import asyncio
             
             s3_key = f"transcripts/{filename}"
@@ -145,10 +160,12 @@ class TranscriptStorage:
             
         except ClientError as e:
             logger.error(f"Failed to save transcript to S3: {e}")
-            raise
+            logger.info("Falling back to local storage.")
+            return await self._save_to_local(filename, content_bytes, file_size)
         except Exception as e:
             logger.error(f"Unexpected error saving to S3: {e}")
-            raise
+            logger.info("Falling back to local storage.")
+            return await self._save_to_local(filename, content_bytes, file_size)
 
     async def retrieve_transcript(self, storage_path: str, storage_type: str) -> Optional[bytes]:
         """
@@ -181,8 +198,11 @@ class TranscriptStorage:
 
     async def _retrieve_from_s3(self, s3_key: str) -> Optional[bytes]:
         """Retrieve transcript from S3."""
+        if not BOTO3_AVAILABLE or not self._s3_client:
+            logger.warning(f"S3 storage not available. Cannot retrieve: {s3_key}")
+            return None
+        
         try:
-            from botocore.exceptions import ClientError
             import asyncio
             
             if not self._initialized:
@@ -215,6 +235,10 @@ class TranscriptStorage:
         Returns:
             Presigned URL or None if failed
         """
+        if not BOTO3_AVAILABLE or not self._s3_client:
+            logger.warning("S3 storage not available. Cannot generate presigned URL.")
+            return None
+        
         try:
             if not self._initialized:
                 self.initialize()

@@ -1,6 +1,9 @@
 discord.py>=2.3.0
 aiosqlite>=0.19.0
-chat-exporter>=2.8.0
-boto3>=1.28.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+
+# Optional dependencies for enhanced functionality
+# Install with: pip install -r requirements-optional.txt
+# - chat-exporter>=2.8.0 (for advanced transcript formatting)
+# - boto3>=1.26.0 (for S3 transcript storage)

@@ -700,13 +700,18 @@ class TicketManagementCog(commands.Cog):
             try:
                 user = await self.bot.fetch_user(user_discord_id)
                 
+                description = (
+                    f"Your support ticket **{channel.name}** has been closed due to inactivity.\n\n"
+                    "If you need further assistance, please open a new ticket.\n\n"
+                    f"**Operating Hours:** {render_operating_hours(self.bot.config.operating_hours)}"
+                )
+                
+                if transcript_html and not CHAT_EXPORTER_AVAILABLE:
+                    description += "\n\n**ℹ️ Note:** Basic transcript export in use. Install `chat_exporter` for enhanced formatting: `pip install -r requirements-optional.txt`"
+                
                 dm_embed = create_embed(
                     title="Ticket Closed",
-                    description=(
-                        f"Your support ticket **{channel.name}** has been closed due to inactivity.\n\n"
-                        "If you need further assistance, please open a new ticket.\n\n"
-                        f"**Operating Hours:** {render_operating_hours(self.bot.config.operating_hours)}"
-                    ),
+                    description=description,
                     color=discord.Color.red(),
                     timestamp=True,
                 )
@@ -1324,13 +1329,18 @@ class TicketManagementCog(commands.Cog):
             try:
                 user = await self.bot.fetch_user(user_id)
 
+                description = (
+                    f"Your support ticket **{channel.name}** has been closed by staff.\n\n"
+                    f"**Reason:** {reason}\n\n"
+                    "If you need further assistance, please open a new ticket."
+                )
+                
+                if transcript_html and not CHAT_EXPORTER_AVAILABLE:
+                    description += "\n\n**ℹ️ Note:** Basic transcript export in use. Install `chat_exporter` for enhanced formatting: `pip install -r requirements-optional.txt`"
+
                 dm_embed = create_embed(
                     title="Ticket Closed",
-                    description=(
-                        f"Your support ticket **{channel.name}** has been closed by staff.\n\n"
-                        f"**Reason:** {reason}\n\n"
-                        "If you need further assistance, please open a new ticket."
-                    ),
+                    description=description,
                     color=discord.Color.red(),
                     timestamp=True,
                 )
@@ -1497,9 +1507,11 @@ class TicketManagementCog(commands.Cog):
 async def setup(bot: ApexCoreBot) -> None:
     if not CHAT_EXPORTER_AVAILABLE:
         logger.warning(
-            "chat_exporter library not found. Transcript generation will be disabled. "
-            "Install with: pip install chat-exporter"
+            "⚠ chat_exporter library not found. Basic transcript format will be used. "
+            "Install with: pip install -r requirements-optional.txt"
         )
+    else:
+        logger.info("✓ Transcript export with advanced formatting enabled")
     bot.add_view(TicketPanelView())
     cog = TicketManagementCog(bot)
     bot.tree.add_command(cog.ticket_group)

@@ -49,6 +49,82 @@ A feature-rich Discord bot for automated product distribution, ticketing, and VI
 
    > **Tip:** Set `CONFIG_PATH` and `DISCORD_TOKEN` environment variables to override the default configuration file path and token.
 
+### Optional Dependencies
+
+The bot includes optional features that enhance functionality but are not required for basic operation:
+
+#### Chat Exporter (Advanced Transcript Formatting)
+
+For enhanced transcript export with professional HTML formatting and styling:
+
+```bash
+pip install -r requirements-optional.txt
+```
+
+or individually:
+
+```bash
+pip install chat-exporter>=2.8.0
+```
+
+**Features:**
+- Professional HTML transcripts with message formatting, timestamps, and user avatars
+- Automatic extraction and display of embeds, attachments, and reactions
+- Discord-themed styling that matches the client interface
+
+**Without chat-exporter:**
+- The bot still exports transcripts in a basic HTML format with message history
+- All ticket information is preserved and delivered to users
+- Functionality is gracefully degraded but fully operational
+- Users are notified via DM that a basic format is in use
+
+#### S3 Storage (Cloud Transcript Archival)
+
+For storing transcripts in AWS S3 instead of local filesystem:
+
+```bash
+pip install boto3>=1.26.0
+```
+
+**Features:**
+- Cloud-based transcript storage with automatic cleanup options
+- Presigned URL generation for sharing transcripts
+- Scalable storage solution for high-volume operations
+
+**Configuration:**
+Set these environment variables to enable S3 storage:
+```bash
+export TRANSCRIPT_STORAGE_TYPE=s3
+export S3_BUCKET=your-bucket-name
+export S3_REGION=us-east-1  # optional, defaults to us-east-1
+export S3_ACCESS_KEY=your-access-key
+export S3_SECRET_KEY=your-secret-key
+```
+
+**Without boto3:**
+- Transcripts are automatically stored in the local `transcripts/` directory
+- Full functionality is maintained with local filesystem storage
+- Graceful degradation with clear warning messages in logs
+
+### Troubleshooting Optional Dependencies
+
+If you encounter issues with optional dependencies:
+
+1. **Chat-Exporter Not Found:**
+   ```
+   ERROR: chat_exporter library not found. Basic transcript generation will be used.
+   ```
+   Solution: Install with `pip install -r requirements-optional.txt`
+
+2. **S3 Storage Unavailable:**
+   ```
+   WARNING: S3 storage unavailable. Using local storage.
+   ```
+   This is normal if `boto3` is not installed. Install with `pip install -r requirements-optional.txt`
+
+3. **Missing S3 Configuration:**
+   If S3 storage is configured but credentials are missing, transcripts automatically fall back to local storage.
+
 ### Running Tests
 
 Automated tests are powered by `pytest` and `pytest-asyncio`. After installing the project requirements, run:
