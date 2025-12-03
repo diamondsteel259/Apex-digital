@@ -254,3 +254,60 @@ async def test_partial_payment_tracking(tmp_path):
 
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_create_referral_prevents_self_referral(tmp_path):
+    db_path = tmp_path / "self.db"
+    db = Database(db_path)
+    await db.connect()
+
+    try:
+        await db.ensure_user(500)
+        with pytest.raises(RuntimeError, match="Users cannot refer themselves"):
+            await db.create_referral(500, 500)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_referral_prevention(tmp_path):
+    db_path = tmp_path / "duplicate.db"
+    db = Database(db_path)
+    await db.connect()
+
+    try:
+        referrer_a = 600
+        referrer_b = 601
+        referred_id = 700
+
+        await db.ensure_user(referrer_a)
+        await db.ensure_user(referrer_b)
+        await db.ensure_user(referred_id)
+
+        await db.create_referral(referrer_a, referred_id)
+
+        with pytest.raises(RuntimeError, match="already been referred"):
+            await db.create_referral(referrer_b, referred_id)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_get_referrer_for_user_returns_assignment(tmp_path):
+    db_path = tmp_path / "referrer.db"
+    db = Database(db_path)
+    await db.connect()
+
+    try:
+        referrer_id = 800
+        referred_id = 801
+
+        await db.ensure_user(referrer_id)
+        await db.ensure_user(referred_id)
+        await db.create_referral(referrer_id, referred_id)
+
+        result = await db.get_referrer_for_user(referred_id)
+        assert result == referrer_id
+    finally:
+        await db.close()
