@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
@@ -91,6 +92,7 @@ class RefundManagementCog(commands.Cog):
         reason="Detailed reason for refund request",
     )
     @rate_limit(cooldown=3600, max_uses=1, per="user", config_key="submitrefund")
+    @financial_cooldown()
     async def submitrefund(
         self,
         interaction: discord.Interaction,
@@ -234,6 +236,7 @@ class RefundManagementCog(commands.Cog):
     @commands.command(name="refund-approve", aliases=["refund_approve"])
     @commands.has_permissions(administrator=True)
     @rate_limit(cooldown=60, max_uses=10, per="user", config_key="refund_approve", admin_bypass=False)
+    @financial_cooldown()
     async def refund_approve(
         self,
         ctx: commands.Context,
@@ -357,6 +360,7 @@ class RefundManagementCog(commands.Cog):
 
     @commands.command(name="refund-reject", aliases=["refund_reject"])
     @commands.has_permissions(administrator=True)
+    @financial_cooldown()
     async def refund_reject(
         self,
         ctx: commands.Context,

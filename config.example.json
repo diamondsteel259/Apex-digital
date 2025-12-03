@@ -178,5 +178,16 @@
       "max_uses": 3,
       "per": "user"
     }
+  },
+  "financial_cooldowns": {
+    "wallet_payment": 30,
+    "submitrefund": 300,
+    "manual_complete": 10,
+    "setref": 86400,
+    "refund_approve": 5,
+    "refund_reject": 5,
+    "balance": 10,
+    "orders": 30,
+    "invites": 30
   }
 }

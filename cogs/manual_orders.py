@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import (
     create_embed,
@@ -58,6 +59,7 @@ class ManualOrdersCog(commands.Cog):
         notes="Additional notes about the order",
     )
     @rate_limit(cooldown=60, max_uses=5, per="user", config_key="manual_complete", admin_bypass=False)
+    @financial_cooldown()
     async def manual_complete(
         self,
         interaction: discord.Interaction,

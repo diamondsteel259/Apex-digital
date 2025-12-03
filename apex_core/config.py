@@ -98,6 +98,7 @@ class Config:
     payment_settings: PaymentSettings | None = None
     refund_settings: RefundSettings | None = None
     rate_limits: dict[str, RateLimitRule] = field(default_factory=dict)
+    financial_cooldowns: dict[str, int] = field(default_factory=dict)
     roles: list[Role] = field(default_factory=list)
     vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
@@ -185,6 +186,25 @@ def _parse_rate_limits(payload: dict[str, Any] | None) -> dict[str, RateLimitRul
     return limits
 
 
+def _parse_financial_cooldowns(payload: dict[str, Any] | None) -> dict[str, int]:
+    """Parse financial cooldown definitions from configuration."""
+    if not payload:
+        return {}
+    if not isinstance(payload, dict):
+        raise ValueError("financial_cooldowns must be an object mapping command keys to cooldown seconds")
+
+    cooldowns: dict[str, int] = {}
+    for key, value in payload.items():
+        try:
+            cooldown_seconds = int(value)
+            if cooldown_seconds < 0:
+                raise ValueError(f"financial_cooldowns entry for '{key}' must be non-negative")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"financial_cooldowns entry for '{key}' must be an integer number of seconds") from exc
+        cooldowns[key] = cooldown_seconds
+    return cooldowns
+
+
 def _validate_order_confirmation_template(template: str) -> None:
     """Validate that the order confirmation template contains required placeholders."""
     required_placeholders = {"{order_id}", "{service_name}", "{variant_name}", "{price}", "{eta}"}
@@ -268,6 +288,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         payment_settings=payment_settings,
         refund_settings=_parse_refund_settings(data.get("refund_settings")),
         rate_limits=_parse_rate_limits(data.get("rate_limits")),
+        financial_cooldowns=_parse_financial_cooldowns(data.get("financial_cooldowns")),
         roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),
