@@ -247,3 +247,38 @@ class TestStorageInitialization:
             # Cleanup
             if Path('test_s3_fallback').exists():
                 Path('test_s3_fallback').rmdir()
+
+    def test_validate_configuration_unknown_type(self):
+        """Test validation catches unknown storage type and falls back to local."""
+        with patch.dict(os.environ, {
+            'TRANSCRIPT_STORAGE_TYPE': 'invalid_type',
+        }), patch('apex_core.storage.logger') as mock_logger:
+            storage = TranscriptStorage()
+            
+            # Should fall back to local immediately during __init__
+            assert storage.storage_type == 'local'
+            
+            # Should log warning during __init__ (before initialize)
+            mock_logger.warning.assert_called()
+            warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
+            assert any('Unknown storage type' in str(call) for call in warning_calls)
+
+    def test_validate_configuration_s3_missing_credentials(self):
+        """Test validation catches missing S3 credentials and falls back to local."""
+        with patch.dict(os.environ, {
+            'TRANSCRIPT_STORAGE_TYPE': 's3',
+            # Missing all S3 credentials
+        }, clear=True), patch('apex_core.storage.logger') as mock_logger:
+            storage = TranscriptStorage()
+            
+            # Should fall back to local immediately during __init__
+            assert storage.storage_type == 'local'
+            
+            # Should log warnings during __init__ (before initialize)
+            mock_logger.warning.assert_called()
+            warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
+            # Check for either missing credentials warning OR boto3 not available warning
+            has_missing_creds_warning = any('missing required environment variables' in str(call) for call in warning_calls)
+            has_boto3_warning = any('boto3 is not installed' in str(call) for call in warning_calls)
+            assert has_missing_creds_warning or has_boto3_warning, f"Expected warning about missing credentials or boto3, got: {warning_calls}"
+            assert any('Falling back to local' in str(call) for call in warning_calls)

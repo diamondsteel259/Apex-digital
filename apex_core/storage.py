@@ -33,6 +33,49 @@ class TranscriptStorage:
         
         self._s3_client = None
         self._initialized = False
+        self._validation_warnings_issued = False
+        
+        # Validate configuration immediately
+        self._validate_configuration()
+
+    def _validate_configuration(self) -> None:
+        """Validate storage configuration and normalize settings."""
+        # Normalize storage_type to only allow 'local' or 's3'
+        if self.storage_type not in ("local", "s3"):
+            logger.warning(
+                f"Unknown storage type '{self.storage_type}', only 'local' and 's3' are supported. "
+                "Defaulting to 'local'."
+            )
+            self.storage_type = "local"
+            self._validation_warnings_issued = True
+            return
+        
+        # Only validate S3 if that's what the user wants
+        if self.storage_type == "s3":
+            missing_creds = []
+            if not self.s3_bucket:
+                missing_creds.append("S3_BUCKET")
+            if not self.s3_access_key:
+                missing_creds.append("S3_ACCESS_KEY")
+            if not self.s3_secret_key:
+                missing_creds.append("S3_SECRET_KEY")
+            
+            if not BOTO3_AVAILABLE:
+                logger.warning(
+                    "⚠️ S3 storage selected but boto3 is not installed. "
+                    "Install with: pip install -r requirements-optional.txt"
+                )
+                logger.warning("Falling back to local transcript storage.")
+                self.storage_type = "local"
+                self._validation_warnings_issued = True
+            elif missing_creds:
+                logger.warning(
+                    f"⚠️ S3 storage selected but missing required environment variables: {', '.join(missing_creds)}. "
+                    "Please set all required S3_* environment variables."
+                )
+                logger.warning("Falling back to local transcript storage.")
+                self.storage_type = "local"
+                self._validation_warnings_issued = True
 
     def _initialize_local(self) -> None:
         """Initialize local storage directory."""
@@ -76,20 +119,22 @@ class TranscriptStorage:
         if self._initialized:
             return
 
+        # If we already validated and found issues, log a single startup warning
+        if self._validation_warnings_issued:
+            logger.warning(f"Transcript storage initialization: using {self.storage_type} storage (fallback due to configuration issues)")
+
         if self.storage_type == "s3":
             try:
                 self._initialize_s3()
             except RuntimeError as e:
-                logger.warning(f"Failed to initialize S3 storage: {e}")
-                logger.warning("Falling back to local transcript storage.")
+                # Only warn if we haven't already warned during validation
+                if not self._validation_warnings_issued:
+                    logger.warning(f"Failed to initialize S3 storage: {e}")
+                    logger.warning("Falling back to local transcript storage.")
                 self.storage_type = "local"
                 self._initialize_local()
         else:
-            if self.storage_type != "local":
-                logger.warning(
-                    f"Unknown storage type '{self.storage_type}', falling back to local"
-                )
-                self.storage_type = "local"
+            # Local storage
             self._initialize_local()
         
         self._initialized = True
