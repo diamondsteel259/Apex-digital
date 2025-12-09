@@ -23,6 +23,62 @@ from apex_core.utils import (
 logger = logging.getLogger(__name__)
 
 
+def _validate_payment_method(method: Any) -> tuple[bool, str]:
+    """
+    Validate a payment method object for completeness and correctness.
+    
+    Returns:
+        tuple of (is_valid, reason_if_invalid)
+    """
+    if method is None:
+        return False, "Payment method is None"
+    
+    # Check if it has the expected attributes
+    if not hasattr(method, 'name'):
+        return False, "Payment method missing 'name' attribute"
+    
+    if not hasattr(method, 'instructions'):
+        return False, "Payment method missing 'instructions' attribute"
+    
+    # Check name
+    name = getattr(method, 'name', None)
+    if not name or not isinstance(name, str):
+        return False, f"Payment method name is invalid: {name!r}"
+    
+    # Check instructions
+    instructions = getattr(method, 'instructions', None)
+    if not instructions or not isinstance(instructions, str):
+        return False, f"Payment method '{name}' has invalid instructions: {instructions!r}"
+    
+    # Check metadata
+    metadata = getattr(method, 'metadata', None)
+    if metadata is None:
+        return False, f"Payment method '{name}' has None metadata"
+    
+    if not isinstance(metadata, dict):
+        return False, f"Payment method '{name}' metadata is not a dict: {type(metadata).__name__}"
+    
+    return True, ""
+
+
+def _safe_get_metadata(metadata: Any, key: str, default: Any = None) -> Any:
+    """
+    Safely get metadata value with defensive programming.
+    
+    Args:
+        metadata: Metadata object (should be dict)
+        key: Key to look up
+        default: Default value if key not found or metadata is invalid
+    
+    Returns:
+        Metadata value or default
+    """
+    if not isinstance(metadata, dict):
+        return default
+    
+    return metadata.get(key, default)
+
+
 def _build_payment_embed(
     product: dict[str, Any],
     user: discord.User | discord.Member,
@@ -47,8 +103,22 @@ def _build_payment_embed(
         color=discord.Color.gold(),
     )
     
-    # Add enabled payment methods
-    enabled_methods = [m for m in payment_methods if m.metadata.get("is_enabled", True) != False]
+    # Add enabled payment methods with validation
+    enabled_methods = []
+    
+    for method in payment_methods:
+        # Validate the payment method first
+        is_valid, reason = _validate_payment_method(method)
+        if not is_valid:
+            logger.warning(f"Skipping invalid payment method: {reason}")
+            continue
+        
+        # Check if method is enabled (with defensive metadata access)
+        is_enabled = _safe_get_metadata(method.metadata, "is_enabled", True)
+        if is_enabled is False:
+            continue
+            
+        enabled_methods.append(method)
     
     if enabled_methods:
         methods_text = "**Available Payment Methods:**\n\n"
@@ -62,7 +132,7 @@ def _build_payment_embed(
             methods_text += f"{emoji} **{name}**\n"
             methods_text += f"{instructions}\n"
             
-            # Add specific metadata based on payment method
+            # Add specific metadata based on payment method with defensive access
             if name == "Wallet":
                 sufficient = user_balance_cents >= final_price_cents
                 status = "✅ Sufficient" if sufficient else "❌ Insufficient"
@@ -70,43 +140,64 @@ def _build_payment_embed(
                 methods_text += f"• Required: {format_usd(final_price_cents)}\n"
             
             elif name == "Binance":
-                if "pay_id" in metadata:
-                    methods_text += f"• **Pay ID:** `{metadata['pay_id']}`\n"
-                if "warning" in metadata:
-                    methods_text += f"• {metadata['warning']}\n"
-                if "url" in metadata:
-                    methods_text += f"• [Open Binance Pay]({metadata['url']})\n"
+                pay_id = _safe_get_metadata(metadata, "pay_id")
+                if pay_id:
+                    methods_text += f"• **Pay ID:** `{pay_id}`\n"
+                
+                warning = _safe_get_metadata(metadata, "warning")
+                if warning:
+                    methods_text += f"• {warning}\n"
+                
+                url = _safe_get_metadata(metadata, "url")
+                if url:
+                    methods_text += f"• [Open Binance Pay]({url})\n"
             
             elif name == "PayPal":
-                if "payout_email" in metadata:
-                    methods_text += f"• **Email:** {metadata['payout_email']}\n"
-                if "payment_link" in metadata:
-                    methods_text += f"• [Send Payment]({metadata['payment_link']})\n"
+                payout_email = _safe_get_metadata(metadata, "payout_email")
+                if payout_email:
+                    methods_text += f"• **Email:** {payout_email}\n"
+                
+                payment_link = _safe_get_metadata(metadata, "payment_link")
+                if payment_link:
+                    methods_text += f"• [Send Payment]({payment_link})\n"
             
             elif name == "Tip.cc":
-                if "command" in metadata:
-                    cmd = metadata['command'].replace("{amount}", format_usd(final_price_cents))
+                command = _safe_get_metadata(metadata, "command")
+                if command:
+                    cmd = command.replace("{amount}", format_usd(final_price_cents))
                     methods_text += f"• **Command:** `{cmd}`\n"
-                if "url" in metadata:
-                    methods_text += f"• [Visit Tip.cc]({metadata['url']})\n"
-                if "warning" in metadata:
-                    methods_text += f"• {metadata['warning']}\n"
+                
+                url = _safe_get_metadata(metadata, "url")
+                if url:
+                    methods_text += f"• [Visit Tip.cc]({url})\n"
+                
+                warning = _safe_get_metadata(metadata, "warning")
+                if warning:
+                    methods_text += f"• {warning}\n"
             
             elif name == "CryptoJar":
-                if "command" in metadata:
-                    cmd = metadata['command'].replace("{amount}", format_usd(final_price_cents))
+                command = _safe_get_metadata(metadata, "command")
+                if command:
+                    cmd = command.replace("{amount}", format_usd(final_price_cents))
                     methods_text += f"• **Command:** `{cmd}`\n"
-                if "url" in metadata:
-                    methods_text += f"• [Visit CryptoJar]({metadata['url']})\n"
-                if "warning" in metadata:
-                    methods_text += f"• {metadata['warning']}\n"
+                
+                url = _safe_get_metadata(metadata, "url")
+                if url:
+                    methods_text += f"• [Visit CryptoJar]({url})\n"
+                
+                warning = _safe_get_metadata(metadata, "warning")
+                if warning:
+                    methods_text += f"• {warning}\n"
             
-            elif name == "Crypto" and metadata.get("type") == "custom_networks":
-                if "networks" in metadata:
-                    networks = ", ".join(metadata["networks"])
-                    methods_text += f"• **Available Networks:** {networks}\n"
-                if "note" in metadata:
-                    methods_text += f"• {metadata['note']}\n"
+            elif name == "Crypto" and _safe_get_metadata(metadata, "type") == "custom_networks":
+                networks = _safe_get_metadata(metadata, "networks")
+                if networks and isinstance(networks, (list, tuple)):
+                    networks_str = ", ".join(str(n) for n in networks)
+                    methods_text += f"• **Available Networks:** {networks_str}\n"
+                
+                note = _safe_get_metadata(metadata, "note")
+                if note:
+                    methods_text += f"• {note}\n"
             
             methods_text += "\n"
         
