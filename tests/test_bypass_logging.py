@@ -112,8 +112,9 @@ class TestAdminBypassLogging:
         """Test that financial_cooldown decorator logs INFO when admin bypasses."""
         
         with patch('apex_core.financial_cooldown_manager.logger') as mock_financial_logger:
+            # Use a known command name from DEFAULT_COOLDOWN_CONFIGS (balance)
             @financial_cooldown(admin_bypass=True)
-            async def test_financial_command(self, interaction):
+            async def balance(self, interaction):
                 return "financial_success"
             
             # Setup bot on self object
@@ -121,7 +122,7 @@ class TestAdminBypassLogging:
             self_mock.bot = mock_bot
             
             # Execute the decorated command
-            result = await test_financial_command(self_mock, mock_interaction)
+            result = await balance(self_mock, mock_interaction)
             assert result == "financial_success"
             
             # Verify INFO logging was called
