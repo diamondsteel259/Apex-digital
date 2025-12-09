@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 11
+        self.target_schema_version = 12
         
         if connect_timeout is None:
             connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "5.0"))
@@ -142,6 +143,7 @@ class Database:
             9: ("refunds_table", self._migration_v9),
             10: ("referrals_table", self._migration_v10),
             11: ("permanent_messages_table", self._migration_v11),
+            12: ("wallet_transactions_user_created_index", self._migration_v12),
         }
 
         for version in sorted(migrations.keys()):
@@ -151,10 +153,15 @@ class Database:
                 try:
                     await migration_fn()
                     await self._record_migration(version, name)
-                    logger.info(f"Migration v{version} applied successfully")
+                    logger.info(f"Migration v{version}: {name} applied successfully")
                 except Exception as e:
-                    logger.error(f"Failed to apply migration v{version}: {e}")
-                    raise
+                    logger.exception(
+                        f"Failed to apply migration v{version} ({name}): {e}",
+                        exc_info=True
+                    )
+                    raise RuntimeError(
+                        f"Migration v{version} ({name}) failed: {e}"
+                    ) from e
 
     async def _record_migration(self, version: int, name: str) -> None:
         """Record a migration as applied in the schema_migrations table."""
@@ -712,10 +719,32 @@ class Database:
         order_id: Optional[int] = None,
         ticket_id: Optional[int] = None,
         staff_discord_id: Optional[int] = None,
-        metadata: Optional[str] = None,
+        metadata: Optional[str | dict] = None,
     ) -> int:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
+
+        validated_metadata = None
+        if metadata is not None:
+            if isinstance(metadata, dict):
+                try:
+                    validated_metadata = json.dumps(metadata)
+                except (TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Failed to serialize metadata dict for user {user_discord_id}: {e}",
+                        exc_info=True
+                    )
+                    validated_metadata = None
+            else:
+                try:
+                    json.loads(metadata)
+                    validated_metadata = metadata
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(
+                        f"Invalid JSON metadata for user {user_discord_id}: {e}",
+                        exc_info=True
+                    )
+                    validated_metadata = None
 
         cursor = await self._connection.execute(
             """
@@ -734,7 +763,7 @@ class Database:
                 order_id,
                 ticket_id,
                 staff_discord_id,
-                metadata,
+                validated_metadata,
             ),
         )
         await self._connection.commit()
@@ -2544,6 +2573,19 @@ class Database:
             """
         )
 
+        await self._connection.commit()
+
+    async def _migration_v12(self) -> None:
+        """Migration v12: Create composite index on wallet_transactions for user and created_at."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_created
+                ON wallet_transactions(user_discord_id, created_at)
+            """
+        )
         await self._connection.commit()
 
     async def deploy_panel(
