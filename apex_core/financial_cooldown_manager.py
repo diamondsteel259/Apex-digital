@@ -35,6 +35,29 @@ class FinancialCooldownConfig:
     operation_type: str
 
 
+class CooldownConfigurationError(RuntimeError):
+    """Raised when cooldown configuration is missing or invalid for a command."""
+
+    def __init__(self, command_key: str, message: str) -> None:
+        self.command_key = command_key
+        super().__init__(f"Cooldown config error for '{command_key}': {message}")
+
+
+# Default cooldown configurations for known financial commands.
+# This can be imported and inspected by external modules for validation.
+DEFAULT_COOLDOWN_CONFIGS: dict[str, FinancialCooldownConfig] = {
+    "wallet_payment": FinancialCooldownConfig(30, CooldownTier.ULTRA_SENSITIVE, "payment"),
+    "submitrefund": FinancialCooldownConfig(300, CooldownTier.ULTRA_SENSITIVE, "refund"),
+    "manual_complete": FinancialCooldownConfig(10, CooldownTier.ULTRA_SENSITIVE, "order"),
+    "setref": FinancialCooldownConfig(86400, CooldownTier.SENSITIVE, "referral"),
+    "refund_approve": FinancialCooldownConfig(5, CooldownTier.SENSITIVE, "staff"),
+    "refund_reject": FinancialCooldownConfig(5, CooldownTier.SENSITIVE, "staff"),
+    "balance": FinancialCooldownConfig(10, CooldownTier.STANDARD, "query"),
+    "orders": FinancialCooldownConfig(30, CooldownTier.STANDARD, "query"),
+    "invites": FinancialCooldownConfig(30, CooldownTier.STANDARD, "query"),
+}
+
+
 class FinancialCooldownManager:
     """Manages financial command cooldowns with enhanced feedback."""
     
@@ -43,34 +66,64 @@ class FinancialCooldownManager:
         self._lock = asyncio.Lock()
     
     def _get_config(self, command_key: str, bot: commands.Bot | None = None) -> FinancialCooldownConfig:
-        """Get cooldown configuration for a specific command."""
-        # Default configurations based on ticket requirements
-        default_configs = {
-            "wallet_payment": FinancialCooldownConfig(30, CooldownTier.ULTRA_SENSITIVE, "payment"),
-            "submitrefund": FinancialCooldownConfig(300, CooldownTier.ULTRA_SENSITIVE, "refund"),
-            "manual_complete": FinancialCooldownConfig(10, CooldownTier.ULTRA_SENSITIVE, "order"),
-            "setref": FinancialCooldownConfig(86400, CooldownTier.SENSITIVE, "referral"),
-            "refund_approve": FinancialCooldownConfig(5, CooldownTier.SENSITIVE, "staff"),
-            "refund_reject": FinancialCooldownConfig(5, CooldownTier.SENSITIVE, "staff"),
-            "balance": FinancialCooldownConfig(10, CooldownTier.STANDARD, "query"),
-            "orders": FinancialCooldownConfig(30, CooldownTier.STANDARD, "query"),
-            "invites": FinancialCooldownConfig(30, CooldownTier.STANDARD, "query"),
-        }
-        
-        # Check if there's a custom config in the bot config
-        if bot and hasattr(bot, 'config') and hasattr(bot.config, 'financial_cooldowns'):
-            custom_configs = getattr(bot.config, 'financial_cooldowns', {})
-            if command_key in custom_configs:
-                custom_seconds = custom_configs[command_key]
-                default_config = default_configs.get(command_key)
-                if default_config:
-                    return FinancialCooldownConfig(
-                        custom_seconds, 
-                        default_config.tier, 
-                        default_config.operation_type
-                    )
-        
-        return default_configs.get(command_key, FinancialCooldownConfig(60, CooldownTier.STANDARD, "unknown"))
+        """
+        Get cooldown configuration for a specific command.
+
+        Raises:
+            CooldownConfigurationError: If command_key is not in defaults and no override exists.
+        """
+        # Try to get custom config from bot.config.financial_cooldowns
+        custom_seconds: int | None = None
+        try:
+            if bot is not None and hasattr(bot, "config"):
+                bot_config = bot.config
+                if hasattr(bot_config, "financial_cooldowns"):
+                    custom_configs = bot_config.financial_cooldowns
+                    if isinstance(custom_configs, dict) and command_key in custom_configs:
+                        custom_seconds = int(custom_configs[command_key])
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to read financial_cooldowns from bot config for command '%s': %s",
+                command_key,
+                exc,
+            )
+            # Fall through to check defaults
+
+        # If we have an override and a default config for tier/operation_type, build merged config
+        if custom_seconds is not None:
+            default_config = DEFAULT_COOLDOWN_CONFIGS.get(command_key)
+            if default_config:
+                return FinancialCooldownConfig(
+                    custom_seconds,
+                    default_config.tier,
+                    default_config.operation_type,
+                )
+            # Override exists but no default for tier/operation_type - use sensible defaults
+            logger.warning(
+                "Command '%s' has override seconds=%d but no default config; using STANDARD tier",
+                command_key,
+                custom_seconds,
+            )
+            return FinancialCooldownConfig(custom_seconds, CooldownTier.STANDARD, "custom")
+
+        # No override - use default config if available
+        if command_key in DEFAULT_COOLDOWN_CONFIGS:
+            logger.warning(
+                "Command '%s' is using default cooldown configuration (no override provided)",
+                command_key,
+            )
+            return DEFAULT_COOLDOWN_CONFIGS[command_key]
+
+        # Command is not in defaults and has no override - fail loudly
+        logger.warning(
+            "No cooldown configuration found for command '%s' (not in defaults, no override)",
+            command_key,
+        )
+        raise CooldownConfigurationError(
+            command_key,
+            f"Command '{command_key}' is not in DEFAULT_COOLDOWN_CONFIGS and no override was provided. "
+            f"Known commands: {sorted(DEFAULT_COOLDOWN_CONFIGS.keys())}",
+        )
     
     def _build_enhanced_message(self, config: FinancialCooldownConfig, remaining_seconds: int) -> str:
         """Build enhanced cooldown message based on tier."""
@@ -225,33 +278,36 @@ def financial_cooldown(
 ) -> Callable[[F], F]:
     """
     Decorator for financial commands with enhanced cooldown feedback.
-    
+
     Args:
         seconds: Override cooldown duration. If None, uses default config.
         tier: Override cooldown tier. If None, uses default config.
         operation_type: Override operation type. If None, uses default config.
         admin_bypass: Whether admins bypass cooldowns.
+
+    Raises:
+        CooldownConfigurationError: If the command has no default config and no override.
     """
     def decorator(func: F) -> F:
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not args:
                 return await func(*args, **kwargs)
-            
+
             self_obj = args[0]
             bot = getattr(self_obj, "bot", None)
-            
+
             # Extract Discord context
             interaction: Optional[discord.Interaction] = None
             ctx: Optional[commands.Context] = None
-            
+
             if len(args) > 1:
                 potential = args[1]
                 if isinstance(potential, discord.Interaction):
                     interaction = potential
                 elif isinstance(potential, commands.Context):
                     ctx = potential
-            
+
             # Determine execution context
             if interaction:
                 user = interaction.user
@@ -261,13 +317,21 @@ def financial_cooldown(
                 guild = ctx.guild
             else:
                 return await func(*args, **kwargs)
-            
+
             command_key = func.__name__
             manager = get_financial_cooldown_manager()
-            
-            # Get configuration
-            config = manager._get_config(command_key, bot)
-            
+
+            # Get configuration - fail fast if misconfigured
+            try:
+                config = manager._get_config(command_key, bot)
+            except CooldownConfigurationError as exc:
+                logger.error(
+                    "Cooldown configuration error for command '%s': %s",
+                    command_key,
+                    exc,
+                )
+                raise
+
             # Override with decorator parameters if provided
             if seconds is not None:
                 config = FinancialCooldownConfig(seconds, tier or config.tier, operation_type or config.operation_type)
