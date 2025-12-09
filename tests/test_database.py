@@ -821,3 +821,117 @@ async def test_connect_default_timeout(mock_logger):
 
     database = Database(":memory__default__")
     assert database.connect_timeout == 5.0
+
+
+@pytest.mark.asyncio
+async def test_log_wallet_transaction_with_dict_metadata(db):
+    """Test that dict metadata is serialized to JSON."""
+    await db.ensure_user(88888)
+    metadata_dict = {"key": "value", "nested": {"count": 42}}
+    
+    transaction_id = await db.log_wallet_transaction(
+        user_discord_id=88888,
+        amount_cents=100,
+        balance_after_cents=100,
+        transaction_type="test",
+        metadata=metadata_dict,
+    )
+    
+    cursor = await db._connection.execute(
+        "SELECT metadata FROM wallet_transactions WHERE id = ?",
+        (transaction_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["metadata"] == json.dumps(metadata_dict)
+
+
+@pytest.mark.asyncio
+async def test_log_wallet_transaction_with_valid_json_string(db):
+    """Test that valid JSON string metadata is accepted."""
+    await db.ensure_user(99999)
+    metadata_str = '{"key": "value", "count": 42}'
+    
+    transaction_id = await db.log_wallet_transaction(
+        user_discord_id=99999,
+        amount_cents=100,
+        balance_after_cents=100,
+        transaction_type="test",
+        metadata=metadata_str,
+    )
+    
+    cursor = await db._connection.execute(
+        "SELECT metadata FROM wallet_transactions WHERE id = ?",
+        (transaction_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["metadata"] == metadata_str
+
+
+@pytest.mark.asyncio
+async def test_log_wallet_transaction_with_invalid_json_string(db):
+    """Test that invalid JSON metadata is logged as warning and stored as NULL."""
+    await db.ensure_user(11111)
+    invalid_metadata = "not valid json {broken"
+    
+    transaction_id = await db.log_wallet_transaction(
+        user_discord_id=11111,
+        amount_cents=100,
+        balance_after_cents=100,
+        transaction_type="test",
+        metadata=invalid_metadata,
+    )
+    
+    cursor = await db._connection.execute(
+        "SELECT metadata FROM wallet_transactions WHERE id = ?",
+        (transaction_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_log_wallet_transaction_with_non_serializable_dict(db):
+    """Test that non-serializable dict metadata is logged as warning and stored as NULL."""
+    await db.ensure_user(22222)
+    
+    class NonSerializable:
+        pass
+    
+    metadata_dict = {"key": NonSerializable()}
+    
+    transaction_id = await db.log_wallet_transaction(
+        user_discord_id=22222,
+        amount_cents=100,
+        balance_after_cents=100,
+        transaction_type="test",
+        metadata=metadata_dict,
+    )
+    
+    cursor = await db._connection.execute(
+        "SELECT metadata FROM wallet_transactions WHERE id = ?",
+        (transaction_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_wallet_transactions_index_exists_after_migrations(db):
+    """Test that the composite index idx_wallet_transactions_user_created exists after migrations."""
+    cursor = await db._connection.execute(
+        "PRAGMA index_list(wallet_transactions)"
+    )
+    indexes = await cursor.fetchall()
+    index_names = [row[1] for row in indexes]
+    
+    assert "idx_wallet_transactions_user_created" in index_names
+
+
+@pytest.mark.asyncio
+async def test_database_schema_version_is_12(db):
+    """Test that the target schema version is 12."""
+    assert db.target_schema_version == 12
