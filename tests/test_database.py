@@ -574,3 +574,87 @@ async def test_get_active_orders(db):
     
     assert order1_id in active_order_ids
     assert order2_id not in active_order_ids  # Refunded order should not be included
+
+
+@pytest.mark.asyncio
+async def test_update_wallet_balance_rollback_on_error(db):
+    """Test that wallet updates rollback on error and raise RuntimeError."""
+    from unittest.mock import AsyncMock, patch
+    
+    discord_id = 11111
+    delta_cents = 500
+    
+    await db.ensure_user(discord_id)
+    
+    rollback_called = False
+    original_rollback = db._connection.rollback
+    
+    async def mock_rollback():
+        nonlocal rollback_called
+        rollback_called = True
+        await original_rollback()
+    
+    # Monkeypatch the connection's execute method to raise during UPDATE
+    original_execute = db._connection.execute
+    call_count = 0
+    
+    async def failing_execute(sql, params=None):
+        nonlocal call_count
+        call_count += 1
+        if "UPDATE users" in sql:
+            raise ValueError("Simulated database error during UPDATE")
+        return await original_execute(sql, params)
+    
+    with patch.object(db._connection, 'execute', side_effect=failing_execute), \
+         patch.object(db._connection, 'rollback', side_effect=mock_rollback):
+        
+        with pytest.raises(RuntimeError, match="Failed to update wallet balance"):
+            await db.update_wallet_balance(discord_id, delta_cents)
+    
+    assert rollback_called, "rollback() should have been called on error"
+    
+    # Verify the connection is still usable after the error
+    user = await db.get_user(discord_id)
+    assert user is not None
+    assert user["wallet_balance_cents"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_wallet_balance_no_rollback_if_not_started_transaction(db):
+    """Test that rollback is not called if we didn't start the transaction."""
+    from unittest.mock import patch
+    
+    discord_id = 22222
+    delta_cents = 300
+    
+    await db.ensure_user(discord_id)
+    
+    rollback_called = False
+    original_rollback = db._connection.rollback
+    
+    async def mock_rollback():
+        nonlocal rollback_called
+        rollback_called = True
+        await original_rollback()
+    
+    # Monkeypatch the connection's execute method to raise during UPDATE
+    original_execute = db._connection.execute
+    
+    async def failing_execute(sql, params=None):
+        if "UPDATE users" in sql:
+            raise ValueError("Simulated database error during UPDATE")
+        return await original_execute(sql, params)
+    
+    # Start a transaction manually so update_wallet_balance won't start one
+    await db._connection.execute("BEGIN IMMEDIATE;")
+    
+    with patch.object(db._connection, 'execute', side_effect=failing_execute), \
+         patch.object(db._connection, 'rollback', side_effect=mock_rollback):
+        
+        with pytest.raises(RuntimeError, match="Failed to update wallet balance"):
+            await db.update_wallet_balance(discord_id, delta_cents)
+    
+    assert not rollback_called, "rollback() should NOT have been called when update_wallet_balance didn't start the transaction"
+    
+    # Rollback the manually started transaction
+    await db._connection.rollback()
