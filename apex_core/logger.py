@@ -7,6 +7,7 @@ structured logging, and enhanced features for production use.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Optional
@@ -28,29 +29,60 @@ class DiscordHandler(logging.Handler):
     
     def emit(self, record: logging.LogRecord) -> None:
         """Emit a log record to Discord channel if available."""
-        if self.bot and self.channel_id:
+        # Short-circuit when bot/channel is unavailable
+        if not (self.bot and self.channel_id):
+            return
+        
+        # Check if channel exists before formatting message
+        channel = self.bot.get_channel(self.channel_id)
+        if not channel:
+            return
+        
+        # Format the message once
+        try:
+            msg = f"**{record.levelname}**: {record.getMessage()}"
+            if hasattr(record, 'exc_info') and record.exc_info:
+                msg += f"\n```{self.format(record)}```"
+        except Exception:
+            # If formatting fails, use a basic message
+            msg = f"**{record.levelname}**: {record.getMessage()}"
+        
+        # Schedule delivery via dedicated helper
+        self._schedule_send(channel, msg)
+    
+    def _schedule_send(self, channel, message: str) -> None:
+        """Schedule message delivery to Discord channel safely."""
+        try:
+            # Try to get the current running loop
             try:
-                import asyncio
-                channel = self.bot.get_channel(self.channel_id)
-                if channel:
-                    # Format the message for Discord
-                    msg = f"**{record.levelname}**: {record.getMessage()}"
-                    if hasattr(record, 'exc_info') and record.exc_info:
-                        msg += f"\n```{self.format(record)}```"
-                    
-                    # Create coroutine and run it
-                    async def send_message():
-                        try:
-                            await channel.send(msg)
-                        except Exception:
-                            # Fail silently to avoid infinite logging loops
-                            pass
-                    
-                    # Run the coroutine
-                    asyncio.create_task(send_message())
-            except Exception:
-                # Fail silently to avoid infinite logging loops
-                pass
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop, use bot's loop
+                if self.bot and hasattr(self.bot, 'loop'):
+                    loop = self.bot.loop
+                else:
+                    # No available loop, cannot send
+                    return
+            
+            # Schedule the send operation
+            if loop.is_running():
+                # Use run_coroutine_threadsafe for thread safety
+                asyncio.run_coroutine_threadsafe(self._send_to_discord(channel, message), loop)
+            else:
+                # If loop is not running, we can't send
+                return
+                
+        except Exception as e:
+            # Log to stderr to prevent recursive logging failures
+            print(f"DiscordHandler: Failed to schedule message: {e}", file=sys.stderr)
+    
+    async def _send_to_discord(self, channel, message: str) -> None:
+        """Send message to Discord channel asynchronously."""
+        try:
+            await channel.send(message)
+        except Exception as e:
+            # Log to stderr to prevent recursive logging failures
+            print(f"DiscordHandler: Failed to send message: {e}", file=sys.stderr)
 
 
 def setup_logger(

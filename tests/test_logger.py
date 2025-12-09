@@ -1,8 +1,9 @@
 """Test the enhanced logger module."""
 
+import asyncio
 import logging
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 
 from apex_core.logger import get_logger, setup_logger, DiscordHandler
 
