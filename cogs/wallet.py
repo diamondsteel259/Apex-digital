@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Sequence
 
@@ -26,7 +27,20 @@ def _slugify(value: str, *, fallback: str = "value", max_length: int = 80) -> st
     return slug[:max_length]
 
 
-def _metadata_lines(metadata: dict[str, str]) -> str:
+def _metadata_lines(metadata: Mapping[str, str]) -> str:
+    """
+    Format payment method metadata as Discord-formatted lines.
+    
+    Converts metadata key-value pairs into formatted text lines, excluding
+    the 'url' key. Keys are prettified by replacing underscores with spaces
+    and applying title case.
+    
+    Args:
+        metadata: Mapping of metadata keys to string values
+    
+    Returns:
+        Newline-separated formatted metadata string (e.g., "**Key:** value\n**Another Key:** value2")
+    """
     parts: list[str] = []
     for key, value in metadata.items():
         if key.lower() == "url":
