@@ -295,8 +295,10 @@ def rate_limit(
                 config_key=config_key,
             )
 
+            identifier = _get_scope_identifier(settings.scope, user, channel, guild)
+
             if admin_bypass and _is_admin(user, guild, bot):
-                logger.debug("Admin %s bypassed rate limit for %s", user.id, settings.key)
+                logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
                 await _send_audit_log(
                     bot=bot,
                     guild=guild,
@@ -391,8 +393,10 @@ async def enforce_interaction_rate_limit(
     channel = interaction.channel
     user = interaction.user
 
+    identifier = _get_scope_identifier(settings.scope, user, channel, guild)
+
     if admin_bypass and _is_admin(user, guild, bot):
-        logger.debug("Admin %s bypassed rate limit for %s", user.id, settings.key)
+        logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
         await _send_audit_log(
             bot=bot,
             guild=guild,

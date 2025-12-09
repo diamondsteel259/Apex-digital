@@ -278,7 +278,7 @@ def financial_cooldown(
             
             # Check admin bypass
             if admin_bypass and _is_admin(user, guild, bot):
-                logger.debug("Admin %s bypassed financial cooldown for %s", user.id, command_key)
+                logger.info("Admin %s bypassed financial cooldown for %s", user.id, command_key)
                 await _send_audit_log(
                     bot=bot,
                     guild=guild,

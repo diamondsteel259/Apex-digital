@@ -1,430 +1,245 @@
-# Rate Limiting System
+# Rate Limiting and Financial Cooldown System
+
+This document describes the rate limiting and financial cooldown system, including admin bypass behavior and logging.
 
 ## Overview
 
-The Apex Core bot implements comprehensive rate limiting to protect sensitive financial operations and administrative commands from abuse and spam. Rate limits are enforced at the command level with per-user, per-channel, or per-guild scopes.
+The Apex bot implements two complementary protection systems:
 
-## Architecture
+1. **Rate Limiting** (`apex_core/rate_limiter.py`) - Prevents command abuse across different scopes
+2. **Financial Cooldowns** (`apex_core/financial_cooldown_manager.py`) - Extra protection for sensitive financial operations
 
-### Core Components
+## Rate Limiting
 
-#### `apex_core/rate_limiter.py`
+### How it Works
 
-The rate limiting system consists of several key classes:
+The rate limiter tracks command usage across three scopes:
+- **User**: Limits per user ID (most common)
+- **Channel**: Limits per channel ID 
+- **Guild**: Limits per guild ID
 
-- **`RateLimitBucket`**: Tracks usage for a specific entity (user/channel/guild) with sliding window algorithm
-- **`RateLimiter`**: Global singleton managing all buckets, violation tracking, and staff alerts
-- **`RateLimitSettings`**: Normalized configuration for each protected command
-- **`RateLimitRule`**: Configuration dataclass loaded from `config.json`
+Commands specify:
+- `cooldown`: Time window in seconds
+- `max_uses`: Maximum uses within the cooldown window
+- `per`: Scope (user/channel/guild)
 
-### Rate Limiting Approaches
-
-#### 1. Decorator for Commands
-
-Use the `@rate_limit()` decorator for slash commands and prefix commands:
+### Decorator Usage
 
 ```python
-from apex_core.rate_limiter import rate_limit
-
-@app_commands.command(name="balance")
-@rate_limit(cooldown=60, max_uses=2, per="user", config_key="balance")
-async def balance(self, interaction: discord.Interaction):
-    # Command implementation
+@rate_limit(cooldown=60, max_uses=5, per="user", admin_bypass=True)
+async def balance_command(self, interaction):
+    # Command logic here
     pass
 ```
 
-#### 2. Manual Enforcement for Callbacks
-
-For button callbacks or other interactions, use `enforce_interaction_rate_limit()`:
+### Interactive Usage
 
 ```python
-from apex_core.rate_limiter import enforce_interaction_rate_limit
-
-async def callback(self, interaction: discord.Interaction):
-    allowed = await enforce_interaction_rate_limit(
-        interaction,
-        command_key="wallet_payment",
-        cooldown=300,
-        max_uses=3,
-        per="user",
-    )
-    if not allowed:
-        return
-    
-    # Process payment...
+await enforce_interaction_rate_limit(
+    interaction=interaction,
+    command_key="button_action",
+    cooldown=30,
+    max_uses=3,
+    per="user",
+    admin_bypass=True,
+)
 ```
 
-## Protected Commands
+## Financial Cooldowns
 
-### High Priority (Financial Operations)
+### How it Works
 
-| Command | Cooldown | Max Uses | Scope | Notes |
-|---------|----------|----------|-------|-------|
-| `/balance` | 60s | 2 | user | View wallet balance |
-| Wallet Payment Button | 300s (5min) | 3 | user | Process instant payment |
-| `/submitrefund` | 3600s (1hr) | 1 | user | Submit refund request |
-| `/setref` | 86400s (24hrs) | 1 | user | Set referrer (one-time) |
-| `!refund-approve` | 60s | 10 | user | Staff: approve refunds |
-| `!manual_complete` | 60s | 5 | user | Staff: complete orders |
+Financial commands have additional cooldown protection beyond basic rate limiting:
 
-### Moderate Priority (Informational)
+- **Ultra Sensitive**: 30-300 seconds (wallet payments, refunds, order completion)
+- **Sensitive**: 5-86400 seconds (referral commands, staff operations)
+- **Standard**: 10-60 seconds (balance queries, order history)
 
-| Command | Cooldown | Max Uses | Scope | Notes |
-|---------|----------|----------|-------|-------|
-| `/orders` | 60s | 5 | user | View order history |
-| `/profile` | 60s | 5 | user | View user profile |
-| `/invites` | 60s | 3 | user | View referral stats |
+### Decorator Usage
+
+```python
+@financial_cooldown(
+    seconds=30,
+    tier=CooldownTier.ULTRA_SENSITIVE,
+    operation_type="payment",
+    admin_bypass=True
+)
+async def wallet_payment_command(self, interaction):
+    # Payment logic here
+    pass
+```
+
+## Admin Bypass Behavior
+
+### How It Works
+
+Administrators with the configured admin role can bypass both rate limits and financial cooldowns. This allows staff to:
+- Respond quickly to user issues
+- Perform maintenance without cooldown restrictions
+- Handle emergency situations
+
+### Bypass Conditions
+
+Bypass occurs when:
+1. `admin_bypass=True` is set on the decorator/function
+2. User has the configured admin role
+3. User is in a guild context (not DM)
+
+## Logging
+
+### Bypass Events
+
+**Important**: Admin bypass events are logged at **INFO level** to ensure visibility in production logs.
+
+#### Rate Limiting Bypasses
+
+```
+INFO: Admin {user_id} bypassed rate limit for {command_key} (scope={scope}, id={identifier})
+```
+
+**Example**:
+```
+INFO: Admin 123456789 bypassed rate limit for balance (scope=user, id=123456789)
+INFO: Admin 123456789 bypassed rate limit for wallet_payment (scope=channel, id=987654321)
+```
+
+#### Financial Cooldown Bypasses
+
+```
+INFO: Admin {user_id} bypassed financial cooldown for {command_key}
+```
+
+**Example**:
+```
+INFO: Admin 123456789 bypassed financial cooldown for wallet_payment
+INFO: Admin 123456789 bypassed financial cooldown for submitrefund
+```
+
+### Monitoring Bypasses
+
+Operators should monitor INFO-level logs for bypass events to:
+- Track staff usage patterns
+- Identify potential misuse of admin privileges
+- Audit compliance with operational procedures
+
+#### Log Monitoring Commands
+
+```bash
+# View recent bypass events
+grep "bypassed rate limit" logs/app.log
+grep "bypassed financial cooldown" logs/app.log
+
+# Monitor in real-time
+tail -f logs/app.log | grep "bypassed"
+```
+
+### Violation Events
+
+Non-admin users hitting rate limits generate **WARNING** level logs:
+
+```
+WARNING: Rate limit triggered | command=balance user=123456789 scope=user id=123456789
+WARNING: Financial cooldown triggered | command=wallet_payment user=123456789 remaining=25s
+```
 
 ## Configuration
 
-### config.json Structure
+### Admin Role Configuration
 
-Add a `rate_limits` section to override default rate limits:
+Admin role is configured in the bot config:
 
-```json
-{
-  "rate_limits": {
-    "balance": {
-      "cooldown": 60,
-      "max_uses": 2,
-      "per": "user"
-    },
-    "wallet_payment": {
-      "cooldown": 300,
-      "max_uses": 3,
-      "per": "user"
-    },
-    "submitrefund": {
-      "cooldown": 3600,
-      "max_uses": 1,
-      "per": "user"
-    },
-    "setref": {
-      "cooldown": 86400,
-      "max_uses": 1,
-      "per": "user"
+```python
+Config(
+    # ... other settings
+    role_ids=RoleIDs(admin=123456789),  # Your admin role ID
+)
+```
+
+### Custom Rate Limits
+
+Custom rate limits can be configured per command:
+
+```python
+Config(
+    # ... other settings
+    rate_limits={
+        "balance": RateLimitRule(cooldown=60, max_uses=2, per="user"),
+        "wallet_payment": RateLimitRule(cooldown=30, max_uses=1, per="user"),
     }
-  }
+)
+```
+
+### Custom Financial Cooldowns
+
+Custom financial cooldowns can be configured per command:
+
+```python
+# The financial cooldown manager automatically picks up config
+custom_cooldowns = {
+    "wallet_payment": 45,  # Override to 45 seconds
+    "balance": 15,         # Override to 15 seconds
 }
 ```
 
-### Parameters
+## Audit Channel Integration
 
-- **`cooldown`**: Time window in seconds for rate limiting
-- **`max_uses`**: Maximum number of uses allowed within the cooldown window
-- **`per`**: Scope of rate limiting:
-  - `"user"`: Per-user rate limit (most common)
-  - `"channel"`: Per-channel rate limit
-  - `"guild"`: Per-guild rate limit
+All bypass events also generate audit channel embeds (separate from INFO logs) for:
+- Rich formatting with user mentions
+- Dedicated audit trail
+- Visual distinction from operational logs
 
-### Decorator Parameters
+Audit embeds include:
+- Admin user mention and ID
+- Command name
+- Reason (Admin privilege)
+- Timestamp
 
-- **`cooldown`**: Cooldown period in seconds (required)
-- **`max_uses`**: Maximum uses within cooldown (required)
-- **`per`**: Scope ("user", "channel", "guild") - default: "user"
-- **`config_key`**: Key to lookup in config.json rate_limits (optional)
-- **`admin_bypass`**: Whether admins bypass limits - default: True
+## Testing
 
-## Admin Bypass
+Bypass logging can be tested using:
 
-### Behavior
+```bash
+# Run bypass logging tests specifically
+pytest tests/test_bypass_logging.py -v
 
-By default, users with the admin role bypass all rate limits. This is useful for testing and administrative operations.
-
-**Key Points:**
-- Admin bypasses are logged to the audit channel with a blue embed
-- Staff commands (`!refund-approve`, `!manual_complete`) set `admin_bypass=False` for accountability
-- Bypasses are tracked but do not count as violations
-
-### Audit Log Example
-
+# Run with specific keywords
+pytest tests -k bypass_logging -v
 ```
-🔓 Rate Limit Bypass
-Admin: @AdminUser (123456789)
-Command: `balance`
-Reason: Admin privilege
-```
-
-## Violation Tracking
-
-### Thresholds
-
-- **Alert Threshold**: 3 violations within 5 minutes
-- **Alert Cooldown**: 10 minutes between staff alerts per user/command
-
-### Staff Alerts
-
-When a user exceeds the alert threshold, staff are notified in the audit channel:
-
-```
-⚠️ Rate Limit Violations
-User: @SpammyUser (987654321)
-Command: `balance`
-Violations (5m window): 5
-Scope: user
-Limit: 2 per 60s
-```
-
-### Violation History
-
-- Violations are tracked per user/command combination
-- History is pruned after 5 minutes
-- Multiple violations of different commands are tracked separately
-
-## User Feedback
-
-### Rate Limit Message Format
-
-When a user is rate limited, they receive a clear message:
-
-```
-⏱️ Please wait 45s before using this command again.
-You can use this command 0 more times in the current window.
-```
-
-Time formatting:
-- Less than 60s: "45s"
-- 60-3599s: "5m 30s"
-- 3600s+: "1h 15m"
-
-## Implementation Examples
-
-### Example 1: Slash Command
-
-```python
-from discord import app_commands
-from apex_core.rate_limiter import rate_limit
-
-class MyCog(commands.Cog):
-    @app_commands.command(name="example")
-    @rate_limit(cooldown=300, max_uses=5, per="user", config_key="example")
-    async def example_command(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Success!", ephemeral=True)
-```
-
-### Example 2: Prefix Command
-
-```python
-from discord.ext import commands
-from apex_core.rate_limiter import rate_limit
-
-class MyCog(commands.Cog):
-    @commands.command(name="staff-action")
-    @commands.has_permissions(administrator=True)
-    @rate_limit(cooldown=60, max_uses=10, per="user", admin_bypass=False)
-    async def staff_action(self, ctx: commands.Context):
-        await ctx.send("Action completed!")
-```
-
-### Example 3: Button Callback
-
-```python
-from apex_core.rate_limiter import enforce_interaction_rate_limit
-
-class PaymentButton(discord.ui.Button):
-    async def callback(self, interaction: discord.Interaction):
-        allowed = await enforce_interaction_rate_limit(
-            interaction,
-            command_key="payment_button",
-            cooldown=300,
-            max_uses=3,
-            per="user",
-            config_key="payment_button",
-        )
-        if not allowed:
-            return
-        
-        # Process payment
-        await interaction.response.send_message("Payment processed!", ephemeral=True)
-```
-
-## Monitoring and Logging
-
-### Log Levels
-
-- **DEBUG**: Admin bypasses, successful rate limit checks
-- **WARNING**: Rate limit triggers, repeated violations
-- **INFO**: General rate limiter initialization
-
-### Audit Channel Events
-
-The audit channel logs:
-1. **Admin Bypasses** (Blue embeds) - When admins bypass rate limits
-2. **Violation Alerts** (Orange embeds) - When users exceed violation threshold
-
-### Example Log Output
-
-```
-[2024-01-15 10:30:45] WARNING:apex_core.rate_limiter: Rate limit triggered | command=balance user=123456789 scope=user id=123456789
-[2024-01-15 10:30:46] DEBUG:apex_core.rate_limiter: Admin 987654321 bypassed rate limit for balance
-```
-
-## Best Practices
-
-### 1. Choose Appropriate Scopes
-
-- **Use `"user"`** for most commands to prevent individual abuse
-- **Use `"channel"`** for commands that affect channel state
-- **Use `"guild"`** for global actions that affect the entire server
-
-### 2. Set Reasonable Limits
-
-- Financial operations: Strict limits (1-3 uses per 5-60 minutes)
-- Informational commands: Moderate limits (3-5 uses per minute)
-- Admin commands: Loose limits but no bypass (5-10 uses per minute)
-
-### 3. Use Config Keys
-
-Always provide a `config_key` to allow server owners to customize limits:
-
-```python
-@rate_limit(cooldown=60, max_uses=5, per="user", config_key="mycommand")
-```
-
-### 4. Consider Admin Bypass
-
-- Set `admin_bypass=True` (default) for user-facing commands
-- Set `admin_bypass=False` for staff commands to maintain accountability
-
-### 5. Test Rate Limits
-
-Test rate limits during development:
-1. Execute command repeatedly
-2. Verify rate limit message appears
-3. Check audit channel for violation alerts
-4. Test admin bypass behavior
 
 ## Troubleshooting
 
-### Common Issues
+### High Bypass Volume
 
-#### 1. Rate Limit Not Applying
+If seeing many bypass events:
+1. Check if staff are using commands appropriately
+2. Consider if cooldowns need adjustment for legitimate usage
+3. Review audit logs for patterns
 
-**Cause**: Decorator order matters
+### Missing Bypass Logs
 
-**Solution**: Place `@rate_limit()` directly above the command function:
+If bypass events aren't appearing:
+1. Verify logging level is set to INFO or lower
+2. Check that admin role ID is configured correctly
+3. Ensure user is in guild context (not DM)
 
-```python
-@app_commands.command()
-@app_commands.describe(...)  # ❌ Wrong order
-@rate_limit(...)
+### Rate Limit Effectiveness
 
-# Should be:
-@app_commands.command()
-@rate_limit(...)  # ✓ Correct
-@app_commands.describe(...)
-async def command(...):
-```
+If rate limits aren't working:
+1. Check configuration is properly loaded
+2. Verify scope identifiers are correct
+3. Review violation alert thresholds
 
-#### 2. Admin Bypass Not Working
+## Best Practices
 
-**Cause**: User doesn't have admin role or role_ids.admin is misconfigured
+1. **Monitor INFO Logs**: Set up monitoring for bypass events
+2. **Regular Audits**: Periodically review bypass patterns
+3. **Minimize Bypass Usage**: Only bypass when operationally necessary
+4. **Proper Configuration**: Ensure admin roles are correctly configured
+5. **Testing**: Regularly test rate limiting behavior
 
-**Solution**: 
-1. Check `config.json` role_ids.admin is correct
-2. Verify user has the admin role
-3. Check audit channel for bypass logs
+## Related Files
 
-#### 3. Violations Not Alerting Staff
-
-**Cause**: Alert cooldown prevents duplicate alerts
-
-**Solution**: 
-- Wait 10 minutes between tests
-- Trigger violations from different users
-- Check audit channel permissions
-
-#### 4. Config Override Not Working
-
-**Cause**: Invalid JSON or missing rate_limits section
-
-**Solution**:
-1. Validate config.json syntax
-2. Ensure rate_limits is at root level
-3. Check logs for config parsing errors
-
-## Performance Considerations
-
-### Memory Usage
-
-- Each rate limit bucket stores timestamp history (deque)
-- Old timestamps are pruned automatically
-- Memory usage is O(n) where n = active users × protected commands
-
-### Concurrency
-
-- All bucket operations use asyncio.Lock for thread safety
-- No race conditions in timestamp tracking
-- Violation history also uses locks for consistency
-
-### Scalability
-
-For bots with:
-- **< 1000 users**: No concerns
-- **1000-10000 users**: Monitor memory usage (~10-50 MB)
-- **> 10000 users**: Consider external rate limiting (Redis)
-
-## Migration Guide
-
-### Adding Rate Limiting to Existing Commands
-
-1. Import the decorator:
-   ```python
-   from apex_core.rate_limiter import rate_limit
-   ```
-
-2. Add decorator with sensible defaults:
-   ```python
-   @rate_limit(cooldown=60, max_uses=5, per="user", config_key="command_name")
-   ```
-
-3. Update config.example.json with the new limit:
-   ```json
-   "rate_limits": {
-     "command_name": {
-       "cooldown": 60,
-       "max_uses": 5,
-       "per": "user"
-     }
-   }
-   ```
-
-4. Test the command to ensure rate limiting works
-
-### Adjusting Existing Limits
-
-1. Update config.json rate_limits section
-2. No bot restart required - changes apply immediately on next use
-3. Monitor audit channel for any issues
-
-## Security Considerations
-
-### Protection Against
-
-- **Spam**: Prevents command flooding
-- **Abuse**: Limits financial operation frequency
-- **DoS**: Prevents resource exhaustion from repeated commands
-- **Exploitation**: Rate limits sensitive operations
-
-### Not Protected Against
-
-- **DMs to Bot**: Rate limits only apply in guilds
-- **API Abuse**: Discord's API limits are separate
-- **Multiple Accounts**: Each account has separate rate limits
-
-### Additional Security
-
-Consider implementing:
-- User reputation system
-- IP-based rate limiting (requires proxy)
-- Automatic temporary bans for excessive violations
-- Command blacklist for problematic users
-
-## Future Enhancements
-
-Potential improvements:
-- Persistent rate limit storage (Redis/database)
-- Dynamic rate limits based on server size
-- Per-role rate limit overrides
-- Rate limit statistics dashboard
-- Whitelist/blacklist system
+- `apex_core/rate_limiter.py` - Core rate limiting implementation
+- `apex_core/financial_cooldown_manager.py` - Financial cooldown system
+- `tests/test_bypass_logging.py` - Bypass logging tests
+- `tests/conftest.py` - Test fixtures and mocks
