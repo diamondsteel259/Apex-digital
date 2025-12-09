@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 from pathlib import Path
@@ -75,7 +77,13 @@ class TranscriptStorage:
             return
 
         if self.storage_type == "s3":
-            self._initialize_s3()
+            try:
+                self._initialize_s3()
+            except RuntimeError as e:
+                logger.warning(f"Failed to initialize S3 storage: {e}")
+                logger.warning("Falling back to local transcript storage.")
+                self.storage_type = "local"
+                self._initialize_local()
         else:
             if self.storage_type != "local":
                 logger.warning(
@@ -142,19 +150,17 @@ class TranscriptStorage:
             return await self._save_to_local(filename, content_bytes, file_size)
         
         try:
-            import asyncio
-            
             s3_key = f"transcripts/{filename}"
             
-            def _upload():
-                self._s3_client.put_object(
-                    Bucket=self.s3_bucket,
-                    Key=s3_key,
-                    Body=content_bytes,
-                    ContentType="text/html",
-                )
+            upload_partial = functools.partial(
+                self._s3_client.put_object,
+                Bucket=self.s3_bucket,
+                Key=s3_key,
+                Body=content_bytes,
+                ContentType="text/html",
+            )
             
-            await asyncio.to_thread(_upload)
+            await asyncio.to_thread(upload_partial)
             logger.info(f"Saved transcript to S3: s3://{self.s3_bucket}/{s3_key}")
             return s3_key, file_size
             
@@ -203,16 +209,20 @@ class TranscriptStorage:
             return None
         
         try:
-            import asyncio
-            
             if not self._initialized:
                 self.initialize()
             
-            def _download():
-                response = self._s3_client.get_object(Bucket=self.s3_bucket, Key=s3_key)
+            def _read_response_body(response):
                 return response['Body'].read()
             
-            return await asyncio.to_thread(_download)
+            get_partial = functools.partial(
+                self._s3_client.get_object,
+                Bucket=self.s3_bucket,
+                Key=s3_key
+            )
+            
+            response = await asyncio.to_thread(get_partial)
+            return _read_response_body(response)
             
         except ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
