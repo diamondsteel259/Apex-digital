@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -13,7 +12,6 @@ from discord.ext import commands
 from apex_core.config import PaymentMethod, PaymentSettings
 from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.logger import get_logger
-from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd, render_operating_hours
 
 logger = get_logger()

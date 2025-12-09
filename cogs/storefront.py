@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from apex_core.rate_limiter import enforce_interaction_rate_limit
@@ -15,7 +14,6 @@ from apex_core.utils import (
     create_embed,
     format_usd,
     handle_vip_promotion,
-    operating_hours_window,
     process_post_purchase,
     render_operating_hours,
 )
