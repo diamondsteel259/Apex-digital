@@ -91,3 +91,68 @@ def test_rate_limit_validation_errors(tmp_path, monkeypatch, payments_payload):
 
     with pytest.raises(ValueError, match="rate_limits entry"):
         load_config(config_path)
+
+
+def test_refund_settings_validation(tmp_path, monkeypatch, payments_payload):
+    config_path = tmp_path / "config.json"
+    payments_path = tmp_path / "payments.json"
+    _write_json(payments_path, payments_payload)
+    monkeypatch.setattr(config_module, "PAYMENTS_CONFIG_PATH", payments_path)
+
+    # 1. Test valid boundary values
+    valid_config = _build_base_config()
+    valid_config["refund_settings"] = {
+        "enabled": True,
+        "max_days": 365,
+        "handling_fee_percent": 100.0
+    }
+    _write_json(config_path, valid_config)
+    cfg = load_config(config_path)
+    assert cfg.refund_settings.max_days == 365
+    assert cfg.refund_settings.handling_fee_percent == 100.0
+
+    valid_config["refund_settings"] = {
+        "enabled": True,
+        "max_days": 0,
+        "handling_fee_percent": 0.0
+    }
+    _write_json(config_path, valid_config)
+    cfg = load_config(config_path)
+    assert cfg.refund_settings.max_days == 0
+    assert cfg.refund_settings.handling_fee_percent == 0.0
+
+    # 2. Test non-numeric max_days
+    invalid_config = _build_base_config()
+    invalid_config["refund_settings"]["max_days"] = "three"
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.max_days must be an integer"):
+        load_config(config_path)
+
+    # 3. Test out-of-range max_days
+    invalid_config["refund_settings"]["max_days"] = 366
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.max_days must be between 0 and 365"):
+        load_config(config_path)
+
+    invalid_config["refund_settings"]["max_days"] = -1
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.max_days must be between 0 and 365"):
+        load_config(config_path)
+
+    # 4. Test non-numeric handling_fee_percent
+    invalid_config = _build_base_config()  # reset to clean base
+    invalid_config["refund_settings"]["handling_fee_percent"] = "ten"
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.handling_fee_percent must be a number"):
+        load_config(config_path)
+
+    # 5. Test out-of-range handling_fee_percent
+    invalid_config["refund_settings"]["handling_fee_percent"] = 100.1
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.handling_fee_percent must be between 0 and 100"):
+        load_config(config_path)
+
+    invalid_config["refund_settings"]["handling_fee_percent"] = -0.1
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="refund_settings.handling_fee_percent must be between 0 and 100"):
+        load_config(config_path)
