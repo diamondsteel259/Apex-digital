@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import discord
 from discord import app_commands
@@ -19,6 +19,7 @@ from apex_core.utils import (
     process_post_purchase,
     render_operating_hours,
 )
+from apex_core.config import PaymentMethod
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,16 @@ def _validate_payment_method(method: Any) -> tuple[bool, str]:
     """
     Validate a payment method object for completeness and correctness.
     
+    Checks that the payment method has required attributes (name, instructions,
+    metadata) and that they are of the correct types. Provides detailed error
+    messages for debugging invalid configurations.
+    
+    Args:
+        method: Payment method object to validate
+    
     Returns:
-        tuple of (is_valid, reason_if_invalid)
+        Tuple of (is_valid, reason_if_invalid) where reason_if_invalid is
+        empty string if valid
     """
     if method is None:
         return False, "Payment method is None"
@@ -63,15 +72,18 @@ def _validate_payment_method(method: Any) -> tuple[bool, str]:
 
 def _safe_get_metadata(metadata: Any, key: str, default: Any = None) -> Any:
     """
-    Safely get metadata value with defensive programming.
+    Safely retrieve metadata value with defensive programming.
+    
+    Returns the default value if metadata is not a dict or the key is not found.
+    This prevents crashes when metadata is None or malformed.
     
     Args:
-        metadata: Metadata object (should be dict)
-        key: Key to look up
-        default: Default value if key not found or metadata is invalid
+        metadata: Metadata object (should be dict, but defensive access allows any type)
+        key: Key to look up in metadata
+        default: Default value if key not found or metadata is invalid (default: None)
     
     Returns:
-        Metadata value or default
+        Metadata value if found, otherwise the default value
     """
     if not isinstance(metadata, dict):
         return default
@@ -84,9 +96,25 @@ def _build_payment_embed(
     user: discord.User | discord.Member,
     final_price_cents: int,
     user_balance_cents: int,
-    payment_methods: list,
+    payment_methods: Sequence[PaymentMethod],
 ) -> discord.Embed:
-    """Build comprehensive payment options embed."""
+    """
+    Build comprehensive payment options embed with available payment methods.
+    
+    Validates and displays all enabled payment methods with method-specific
+    details (wallet balance, Binance Pay ID, PayPal email, etc.). Invalid or
+    disabled payment methods are skipped with logging.
+    
+    Args:
+        product: Product dictionary containing variant_name, service_name, start_time
+        user: Discord user or member initiating the purchase
+        final_price_cents: Final price in cents
+        user_balance_cents: User's wallet balance in cents
+        payment_methods: Sequence of available payment methods to display
+    
+    Returns:
+        Configured Discord Embed with payment options and method-specific details
+    """
     variant_name = product.get("variant_name", "Unknown")
     service_name = product.get("service_name", "Unknown")
     start_time = product.get("start_time", "N/A")
@@ -225,6 +253,19 @@ def _build_payment_embed(
 
 
 def _product_display_name(product: Any) -> str:
+    """
+    Extract display name from a product object using multiple strategies.
+    
+    Attempts to retrieve a product name by trying variant_name, service_name,
+    and name attributes/keys in order. Falls back to "Unknown Product" if
+    the product is None or no name can be determined.
+    
+    Args:
+        product: Product object with get() method and/or subscript access
+    
+    Returns:
+        Product display name or "Unknown Product" if not found
+    """
     if not product:
         return "Unknown Product"
 
