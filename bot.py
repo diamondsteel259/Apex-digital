@@ -16,7 +16,6 @@ import discord
 from discord.ext import commands
 
 from apex_core import load_config, load_payment_settings, Database, TranscriptStorage
-from apex_core.financial_cooldown_manager import get_financial_cooldown_manager
 from apex_core.logger import setup_logger
 
 # Set up enhanced logger
