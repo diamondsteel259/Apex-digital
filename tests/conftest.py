@@ -230,7 +230,7 @@ def sample_config(sample_roles: list[Role]) -> Config:
 
 @pytest_asyncio.fixture
 async def db():
-    database = Database(":memory:")
+    database = Database(":memory:", connect_timeout=5.0)
     await database.connect()
 
     await database._connection.execute(
