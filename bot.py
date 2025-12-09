@@ -7,6 +7,7 @@ This is the main entrypoint for the bot.
 import asyncio
 import logging
 import os
+import re
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -33,6 +34,35 @@ try:
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
+
+
+def _validate_token_format(token: str) -> bool:
+    """
+    Validates that the token matches the expected Discord token format.
+    
+    Expected format: three base64-like segments separated by dots.
+    Segments should be alphanumeric with - or _.
+    """
+    if not token or not isinstance(token, str):
+        return False
+        
+    parts = token.split('.')
+    if len(parts) != 3:
+        return False
+        
+    # Check that each part matches base64-like pattern
+    # We use a slightly lenient regex to allow for potential future format tweaks
+    # but strictly enforce the 3-part structure and allowed characters.
+    token_part_pattern = r'^[A-Za-z0-9_-]+$'
+    
+    if not all(re.match(token_part_pattern, part) for part in parts):
+        return False
+        
+    # Reasonable length checks to filter out obviously bad inputs
+    if len(parts[0]) < 10 or len(parts[1]) < 3 or len(parts[2]) < 10:
+        return False
+        
+    return True
 
 
 class ApexCoreBot(commands.Bot):
@@ -122,6 +152,11 @@ async def main():
         sys.exit(1)
 
     if token:
+        # Validate token format
+        if not _validate_token_format(token):
+            logger.error("Invalid DISCORD_TOKEN format in environment variables.")
+            sys.exit(1)
+            
         config = replace(config, token=token)
         logger.info("Using token from environment variable")
     
