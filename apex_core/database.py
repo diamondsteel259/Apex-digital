@@ -601,32 +601,46 @@ class Database:
             raise RuntimeError("Database connection not initialized.")
 
         async with self._wallet_lock:
+            if self._connection is None:
+                raise RuntimeError("Database connection not initialized.")
+
             started_transaction = False
             if not self._connection.in_transaction:
                 await self._connection.execute("BEGIN IMMEDIATE;")
                 started_transaction = True
 
-            await self._connection.execute(
-                """
-                INSERT INTO users (discord_id, wallet_balance_cents)
-                VALUES (?, 0)
-                ON CONFLICT(discord_id) DO NOTHING;
-                """,
-                (discord_id,),
-            )
-            await self._connection.execute(
-                """
-                UPDATE users
-                SET wallet_balance_cents = wallet_balance_cents + ?,
-                    total_lifetime_spent_cents = CASE
-                        WHEN ? > 0 THEN total_lifetime_spent_cents + ?
-                        ELSE total_lifetime_spent_cents
-                    END,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE discord_id = ?;
-                """,
-                (delta_cents, delta_cents, delta_cents, discord_id),
-            )
+            try:
+                await self._connection.execute(
+                    """
+                    INSERT INTO users (discord_id, wallet_balance_cents)
+                    VALUES (?, 0)
+                    ON CONFLICT(discord_id) DO NOTHING;
+                    """,
+                    (discord_id,),
+                )
+                await self._connection.execute(
+                    """
+                    UPDATE users
+                    SET wallet_balance_cents = wallet_balance_cents + ?,
+                        total_lifetime_spent_cents = CASE
+                            WHEN ? > 0 THEN total_lifetime_spent_cents + ?
+                            ELSE total_lifetime_spent_cents
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE discord_id = ?;
+                    """,
+                    (delta_cents, delta_cents, delta_cents, discord_id),
+                )
+            except Exception as e:
+                if started_transaction:
+                    await self._connection.rollback()
+                logger.error(
+                    f"Failed to update wallet balance for user {discord_id}: "
+                    f"delta={delta_cents} cents, error={str(e)}"
+                )
+                raise RuntimeError(
+                    f"Failed to update wallet balance for user {discord_id}: {str(e)}"
+                ) from e
 
             if started_transaction:
                 await self._connection.commit()
