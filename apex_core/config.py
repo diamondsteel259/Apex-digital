@@ -158,10 +158,33 @@ def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | N
     if not payload:
         return None
     
+    # Validate enabled flag
+    enabled = bool(payload.get("enabled", True))
+
+    # Validate max_days
+    raw_max_days = payload.get("max_days", 3)
+    try:
+        max_days = int(raw_max_days)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"refund_settings.max_days must be an integer (got {raw_max_days!r})") from exc
+    
+    if not 0 <= max_days <= 365:
+        raise ValueError(f"refund_settings.max_days must be between 0 and 365 (got {max_days})")
+
+    # Validate handling_fee_percent
+    raw_fee = payload.get("handling_fee_percent", 10.0)
+    try:
+        handling_fee_percent = float(raw_fee)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"refund_settings.handling_fee_percent must be a number (got {raw_fee!r})") from exc
+        
+    if not 0 <= handling_fee_percent <= 100:
+        raise ValueError(f"refund_settings.handling_fee_percent must be between 0 and 100 (got {handling_fee_percent})")
+    
     return RefundSettings(
-        enabled=bool(payload.get("enabled", True)),
-        max_days=int(payload.get("max_days", 3)),
-        handling_fee_percent=float(payload.get("handling_fee_percent", 10.0)),
+        enabled=enabled,
+        max_days=max_days,
+        handling_fee_percent=handling_fee_percent,
     )
 
 
