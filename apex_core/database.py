@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,19 +18,67 @@ logger = get_logger()
 class Database:
     """Async database handler using SQLite."""
 
-    def __init__(self, db_path: str | Path = "apex_core.db") -> None:
+    def __init__(self, db_path: str | Path = "apex_core.db", connect_timeout: float | None = None) -> None:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
         self.target_schema_version = 11
+        
+        if connect_timeout is None:
+            connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "5.0"))
+        self.connect_timeout = connect_timeout
 
     async def connect(self) -> None:
+        """Connect to the database with timeout protection and retry logic."""
         if self._connection is None:
-            self._connection = await aiosqlite.connect(self.db_path)
-            self._connection.row_factory = aiosqlite.Row
-            await self._connection.execute("PRAGMA foreign_keys = ON;")
-            await self._connection.commit()
-            await self._initialize_schema()
+            max_retries = 1
+            for attempt in range(max_retries + 1):
+                try:
+                    self._connection = await asyncio.wait_for(
+                        aiosqlite.connect(str(self.db_path)),
+                        timeout=self.connect_timeout
+                    )
+                    
+                    try:
+                        self._connection.row_factory = aiosqlite.Row
+                        await self._connection.execute("PRAGMA foreign_keys = ON;")
+                        await self._connection.commit()
+                        await self._initialize_schema()
+                    except Exception as init_error:
+                        if self._connection:
+                            await self._connection.close()
+                        self._connection = None
+                        logger.error(
+                            f"Failed to initialize database after connection: {init_error}. "
+                            f"Database path: {self.db_path}"
+                        )
+                        raise
+                    
+                    return
+                    
+                except asyncio.TimeoutError:
+                    self._connection = None
+                    timeout_msg = (
+                        f"Database connection timed out after {self.connect_timeout}s "
+                        f"(attempt {attempt + 1}/{max_retries + 1}). Database path: {self.db_path}"
+                    )
+                    if attempt < max_retries:
+                        logger.warning(f"{timeout_msg}. Retrying...")
+                    else:
+                        logger.error(f"{timeout_msg}. Max retries exhausted.")
+                        raise TimeoutError(timeout_msg) from None
+                        
+                except Exception as conn_error:
+                    self._connection = None
+                    error_msg = (
+                        f"Failed to connect to database (attempt {attempt + 1}/{max_retries + 1}): {conn_error}. "
+                        f"Database path: {self.db_path}"
+                    )
+                    if attempt < max_retries:
+                        logger.warning(f"{error_msg}. Retrying...")
+                    else:
+                        logger.error(f"{error_msg}. Max retries exhausted.")
+                        raise RuntimeError(error_msg) from conn_error
 
     async def close(self) -> None:
         if self._connection:

@@ -653,8 +653,171 @@ async def test_update_wallet_balance_no_rollback_if_not_started_transaction(db):
         
         with pytest.raises(RuntimeError, match="Failed to update wallet balance"):
             await db.update_wallet_balance(discord_id, delta_cents)
-    
+
     assert not rollback_called, "rollback() should NOT have been called when update_wallet_balance didn't start the transaction"
-    
+
     # Rollback the manually started transaction
     await db._connection.rollback()
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_with_timeout_error(mock_logger):
+    """Test that connection timeout is respected and raises TimeoutError."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database(":memory:", connect_timeout=0.01)
+
+    async def slow_connect(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return AsyncMock()
+
+    with patch('aiosqlite.connect', side_effect=slow_connect):
+        with pytest.raises(TimeoutError, match="Database connection timed out"):
+            await database.connect()
+
+    assert database._connection is None, "Connection should remain None after timeout"
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_logs_actionable_error(mock_logger):
+    """Test that timeout errors are logged with actionable context and include db path/timeout."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database("/tmp/test_timeout.db", connect_timeout=0.05)
+
+    async def slow_connect(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return AsyncMock()
+
+    with patch('aiosqlite.connect', side_effect=slow_connect):
+        try:
+            await database.connect()
+            assert False, "Should have raised TimeoutError"
+        except TimeoutError as e:
+            error_msg = str(e)
+            assert "timed out" in error_msg, f"Error message should contain 'timed out'. Got: {error_msg}"
+            assert "0.05s" in error_msg, f"Error message should include timeout value. Got: {error_msg}"
+            assert "test_timeout.db" in error_msg, f"Error message should include db path. Got: {error_msg}"
+
+    assert database._connection is None
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_state_reusable_after_failure(mock_logger):
+    """Test that database object remains reusable after a connection timeout."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database(":memory:", connect_timeout=0.01)
+
+    call_count = [0]
+
+    async def conditional_slow_connect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            await asyncio.sleep(1.0)
+        raise TimeoutError("Simulated timeout after 1st attempt")
+
+    with patch('aiosqlite.connect', side_effect=conditional_slow_connect):
+        with pytest.raises(TimeoutError):
+            await database.connect()
+
+    assert database._connection is None
+    assert database.db_path
+    assert database.connect_timeout == 0.01
+
+
+@pytest.mark.asyncio
+async def test_connect_initialization_failure_closes_connection(mock_logger):
+    """Test that partially opened connection is closed if initialization fails."""
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database(":memory:", connect_timeout=5.0)
+
+    call_count = [0]
+    mock_conn = AsyncMock()
+    mock_conn.close = AsyncMock()
+    mock_conn.execute = AsyncMock(side_effect=ValueError("Schema initialization failed"))
+    mock_conn.commit = AsyncMock()
+    
+    async def mock_connect(*args, **kwargs):
+        return mock_conn
+
+    with patch('aiosqlite.connect', side_effect=mock_connect):
+        with pytest.raises(RuntimeError, match="Schema initialization failed"):
+            await database.connect()
+
+    assert mock_conn.close.called, "Connection should be closed on initialization failure"
+    assert database._connection is None, "Connection should be None after failed initialization"
+
+
+@pytest.mark.asyncio
+async def test_connect_with_retry_on_timeout(mock_logger):
+    """Test that connection is retried once after timeout."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database(":memory:", connect_timeout=0.01)
+
+    call_count = [0]
+
+    async def conditional_timeout_connect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            await asyncio.sleep(1.0)
+        raise RuntimeError("Permanent connection error")
+
+    with patch('aiosqlite.connect', side_effect=conditional_timeout_connect):
+        with pytest.raises(RuntimeError, match="Permanent connection error"):
+            await database.connect()
+
+    assert call_count[0] == 2, "Should have attempted connection twice (initial + 1 retry)"
+    assert database._connection is None
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_with_custom_timeout(mock_logger):
+    """Test that custom timeout value is respected."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from apex_core.database import Database
+
+    database = Database(":memory:", connect_timeout=0.05)
+
+    async def slow_connect(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return AsyncMock()
+
+    with patch('aiosqlite.connect', side_effect=slow_connect):
+        with pytest.raises(TimeoutError, match="0.05s"):
+            await database.connect()
+
+    assert database._connection is None
+    assert database.connect_timeout == 0.05
+
+
+@pytest.mark.asyncio
+async def test_connect_with_environment_variable_timeout(mock_logger):
+    """Test that connect_timeout can be sourced from environment variable."""
+    from unittest.mock import patch
+    from apex_core.database import Database
+
+    with patch.dict('os.environ', {'DB_CONNECT_TIMEOUT': '3.5'}):
+        database = Database(":memory__env__")
+        assert database.connect_timeout == 3.5
+
+
+@pytest.mark.asyncio
+async def test_connect_default_timeout(mock_logger):
+    """Test that default timeout is approximately 5 seconds."""
+    from apex_core.database import Database
+
+    database = Database(":memory__default__")
+    assert database.connect_timeout == 5.0
