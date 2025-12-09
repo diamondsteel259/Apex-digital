@@ -180,6 +180,7 @@ Thumbs.db
 # Project specific
 *.db
 config.json
+config/payments.json
 logs/
 transcripts/
 
