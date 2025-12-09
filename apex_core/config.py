@@ -10,6 +10,13 @@ from typing import Any, Dict, Iterable
 CONFIG_PATH = Path("config.json")
 PAYMENTS_CONFIG_PATH = Path("config/payments.json")
 
+VALID_ASSIGNMENT_MODES = {
+    "automatic_spend",
+    "automatic_first_purchase",
+    "automatic_all_ranks",
+    "manual",
+}
+
 
 @dataclass(frozen=True)
 class OperatingHours:
@@ -139,15 +146,52 @@ def _parse_payment_methods(payload: Iterable[dict[str, Any]]) -> list[PaymentMet
 def _parse_roles(payload: Iterable[dict[str, Any]]) -> list[Role]:
     roles: list[Role] = []
     for item in payload:
+        name = str(item.get("name", "Unknown Role"))
+        
+        # Validate assignment_mode
+        assignment_mode = item.get("assignment_mode")
+        if assignment_mode not in VALID_ASSIGNMENT_MODES:
+            raise ValueError(
+                f"Role '{name}': assignment_mode must be one of {sorted(VALID_ASSIGNMENT_MODES)} "
+                f"(got {assignment_mode!r})"
+            )
+
+        # Validate role_id
+        try:
+            role_id = int(item["role_id"])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f"Role '{name}': role_id must be an integer (got {item.get('role_id')!r})") from exc
+        
+        if role_id <= 0:
+            raise ValueError(f"Role '{name}': role_id must be a positive integer (got {role_id})")
+
+        # Validate discount_percent
+        try:
+            discount_percent = float(item["discount_percent"])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f"Role '{name}': discount_percent must be a number (got {item.get('discount_percent')!r})") from exc
+            
+        if not 0 <= discount_percent <= 100:
+            raise ValueError(f"Role '{name}': discount_percent must be between 0 and 100 (got {discount_percent})")
+
+        # Validate tier_priority
+        try:
+            tier_priority = int(item.get("tier_priority", 0))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Role '{name}': tier_priority must be an integer (got {item.get('tier_priority')!r})") from exc
+            
+        if tier_priority < 0:
+            raise ValueError(f"Role '{name}': tier_priority must be non-negative (got {tier_priority})")
+
         roles.append(
             Role(
                 name=item["name"],
-                role_id=int(item["role_id"]),
-                assignment_mode=item["assignment_mode"],
+                role_id=role_id,
+                assignment_mode=assignment_mode,
                 unlock_condition=item["unlock_condition"] if isinstance(item["unlock_condition"], str) else int(item["unlock_condition"]),
-                discount_percent=float(item["discount_percent"]),
+                discount_percent=discount_percent,
                 benefits=item.get("benefits", []),
-                tier_priority=int(item.get("tier_priority", 0)),
+                tier_priority=tier_priority,
             )
         )
     return roles

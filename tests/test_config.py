@@ -156,3 +156,77 @@ def test_refund_settings_validation(tmp_path, monkeypatch, payments_payload):
     _write_json(config_path, invalid_config)
     with pytest.raises(ValueError, match="refund_settings.handling_fee_percent must be between 0 and 100"):
         load_config(config_path)
+
+
+def test_role_validation(tmp_path, monkeypatch, payments_payload):
+    config_path = tmp_path / "config.json"
+    payments_path = tmp_path / "payments.json"
+    _write_json(payments_path, payments_payload)
+    monkeypatch.setattr(config_module, "PAYMENTS_CONFIG_PATH", payments_path)
+
+    # 1. Happy path
+    valid_config = _build_base_config()
+    valid_config["roles"] = [
+        {
+            "name": "Valid Role",
+            "role_id": 123456,
+            "assignment_mode": "automatic_spend",
+            "unlock_condition": 100,
+            "discount_percent": 10.5,
+            "tier_priority": 1,
+            "benefits": ["Benefit 1"]
+        }
+    ]
+    _write_json(config_path, valid_config)
+    cfg = load_config(config_path)
+    assert len(cfg.roles) == 1
+    assert cfg.roles[0].name == "Valid Role"
+    assert cfg.roles[0].discount_percent == 10.5
+
+    # 2. Invalid assignment_mode
+    invalid_config = _build_base_config()
+    invalid_config["roles"] = [
+        {
+            "name": "Bad Mode",
+            "role_id": 123,
+            "assignment_mode": "invalid_mode",
+            "unlock_condition": 0,
+            "discount_percent": 0
+        }
+    ]
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="assignment_mode must be one of"):
+        load_config(config_path)
+
+    # 3. Invalid discount_percent (non-numeric)
+    invalid_config["roles"][0]["assignment_mode"] = "manual"  # fix mode
+    invalid_config["roles"][0]["discount_percent"] = "ten"
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="discount_percent must be a number"):
+        load_config(config_path)
+
+    # 4. Invalid discount_percent (out of range)
+    invalid_config["roles"][0]["discount_percent"] = 101.0
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="discount_percent must be between 0 and 100"):
+        load_config(config_path)
+
+    # 5. Invalid tier_priority (negative)
+    invalid_config["roles"][0]["discount_percent"] = 0  # fix discount
+    invalid_config["roles"][0]["tier_priority"] = -1
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="tier_priority must be non-negative"):
+        load_config(config_path)
+
+    # 6. Invalid role_id (non-numeric)
+    invalid_config["roles"][0]["tier_priority"] = 0  # fix priority
+    invalid_config["roles"][0]["role_id"] = "abc"
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="role_id must be an integer"):
+        load_config(config_path)
+
+    # 7. Invalid role_id (negative)
+    invalid_config["roles"][0]["role_id"] = -5
+    _write_json(config_path, invalid_config)
+    with pytest.raises(ValueError, match="role_id must be a positive integer"):
+        load_config(config_path)
