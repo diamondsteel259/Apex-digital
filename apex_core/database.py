@@ -24,7 +24,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 12
+        self.target_schema_version = 13
         
         if connect_timeout is None:
             connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "5.0"))
@@ -145,6 +145,7 @@ class Database:
             10: ("referrals_table", self._migration_v10),
             11: ("permanent_messages_table", self._migration_v11),
             12: ("wallet_transactions_user_created_index", self._migration_v12),
+            13: ("setup_sessions_table", self._migration_v13),
         }
 
         for version in sorted(migrations.keys()):
@@ -2589,6 +2590,46 @@ class Database:
         )
         await self._connection.commit()
 
+    async def _migration_v13(self) -> None:
+        """Migration v13: Create setup_sessions table for persisting setup wizard state."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        await self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS setup_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                panel_types TEXT NOT NULL,
+                current_index INTEGER NOT NULL DEFAULT 0,
+                completed_panels TEXT,
+                progress TEXT,
+                session_payload TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                UNIQUE(guild_id, user_id)
+            )
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_setup_sessions_guild_user
+                ON setup_sessions(guild_id, user_id)
+            """
+        )
+
+        await self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_setup_sessions_expires_at
+                ON setup_sessions(expires_at)
+            """
+        )
+
+        await self._connection.commit()
+
     async def deploy_panel(
         self,
         panel_type: str,
@@ -2769,3 +2810,185 @@ class Database:
             except Exception as rollback_error:
                 logger.error(f"Failed to rollback transaction: {rollback_error}")
             raise
+
+    async def create_setup_session(
+        self,
+        guild_id: int,
+        user_id: int,
+        panel_types: list[str],
+        session_payload: Optional[str] = None,
+        expires_at: Optional[str] = None,
+    ) -> int:
+        """Create a new setup session.
+        
+        Args:
+            guild_id: Discord guild ID
+            user_id: Discord user ID
+            panel_types: List of panel types to set up
+            session_payload: Serialized session state (JSON)
+            expires_at: Expiration timestamp in ISO format
+            
+        Returns:
+            Session ID
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        panel_types_str = json.dumps(panel_types)
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO setup_sessions (guild_id, user_id, panel_types, session_payload, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                panel_types = excluded.panel_types,
+                current_index = 0,
+                session_payload = excluded.session_payload,
+                expires_at = excluded.expires_at,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (guild_id, user_id, panel_types_str, session_payload, expires_at),
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def get_setup_session(self, guild_id: int, user_id: int) -> Optional[dict]:
+        """Get an active setup session.
+        
+        Args:
+            guild_id: Discord guild ID
+            user_id: Discord user ID
+            
+        Returns:
+            Session record or None
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM setup_sessions
+            WHERE guild_id = ? AND user_id = ?
+            AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            """,
+            (guild_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def update_setup_session(
+        self,
+        guild_id: int,
+        user_id: int,
+        current_index: Optional[int] = None,
+        completed_panels: Optional[list[str]] = None,
+        progress: Optional[str] = None,
+        session_payload: Optional[str] = None,
+    ) -> bool:
+        """Update an existing setup session.
+        
+        Args:
+            guild_id: Discord guild ID
+            user_id: Discord user ID
+            current_index: Current panel index
+            completed_panels: List of completed panel types
+            progress: Progress description
+            session_payload: Serialized session state
+            
+        Returns:
+            True if session was updated, False if not found
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        # Build update clause
+        updates = ["updated_at = CURRENT_TIMESTAMP"]
+        params: list[Any] = []
+        
+        if current_index is not None:
+            updates.append("current_index = ?")
+            params.append(current_index)
+        
+        if completed_panels is not None:
+            updates.append("completed_panels = ?")
+            params.append(json.dumps(completed_panels))
+        
+        if progress is not None:
+            updates.append("progress = ?")
+            params.append(progress)
+        
+        if session_payload is not None:
+            updates.append("session_payload = ?")
+            params.append(session_payload)
+        
+        params.extend([guild_id, user_id])
+        
+        query = f"""
+            UPDATE setup_sessions
+            SET {', '.join(updates)}
+            WHERE guild_id = ? AND user_id = ?
+        """
+        
+        cursor = await self._connection.execute(query, params)
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def delete_setup_session(self, guild_id: int, user_id: int) -> bool:
+        """Delete a setup session.
+        
+        Args:
+            guild_id: Discord guild ID
+            user_id: Discord user ID
+            
+        Returns:
+            True if session was deleted, False if not found
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            DELETE FROM setup_sessions
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def cleanup_expired_sessions(self) -> int:
+        """Remove expired setup sessions.
+        
+        Returns:
+            Number of sessions deleted
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            DELETE FROM setup_sessions
+            WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP
+            """
+        )
+        await self._connection.commit()
+        return cursor.rowcount
+
+    async def get_all_active_sessions(self) -> list[dict]:
+        """Get all active setup sessions.
+        
+        Returns:
+            List of active session records
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM setup_sessions
+            WHERE expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP
+            ORDER BY updated_at DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]

@@ -94,6 +94,25 @@ class TicketCategories:
 
 
 @dataclass(frozen=True)
+class CategoryIDs:
+    """Mapping of category names to Discord category IDs."""
+    data: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ChannelIDs:
+    """Mapping of channel names to Discord channel IDs."""
+    data: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SetupSettings:
+    """Settings for the setup wizard."""
+    session_timeout_minutes: int = 30
+    default_mode: str = "modern"  # "modern" (slash) or "legacy" (modal)
+
+
+@dataclass
 class Config:
     token: str
     guild_ids: list[int]
@@ -109,6 +128,9 @@ class Config:
     roles: list[Role] = field(default_factory=list)
     vip_thresholds: list[VipTier] = field(default_factory=list)
     bot_prefix: str = "!"
+    category_ids: CategoryIDs = field(default_factory=CategoryIDs)
+    channel_ids: ChannelIDs = field(default_factory=ChannelIDs)
+    setup_settings: SetupSettings = field(default_factory=SetupSettings)
 
 
 def _coerce_hour(value: Any, *, field_name: str) -> int:
@@ -272,6 +294,66 @@ def _parse_financial_cooldowns(payload: dict[str, Any] | None) -> dict[str, int]
     return cooldowns
 
 
+def _parse_category_ids(payload: dict[str, Any] | None) -> CategoryIDs:
+    """Parse category IDs mapping from configuration."""
+    if not payload:
+        return CategoryIDs(data={})
+    if not isinstance(payload, dict):
+        raise ValueError("category_ids must be an object mapping category names to IDs")
+    
+    data: dict[str, int] = {}
+    for key, value in payload.items():
+        try:
+            data[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"category_ids entry for '{key}' must be an integer ID") from exc
+    
+    return CategoryIDs(data=data)
+
+
+def _parse_channel_ids(payload: dict[str, Any] | None) -> ChannelIDs:
+    """Parse channel IDs mapping from configuration."""
+    if not payload:
+        return ChannelIDs(data={})
+    if not isinstance(payload, dict):
+        raise ValueError("channel_ids must be an object mapping channel names to IDs")
+    
+    data: dict[str, int] = {}
+    for key, value in payload.items():
+        try:
+            data[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"channel_ids entry for '{key}' must be an integer ID") from exc
+    
+    return ChannelIDs(data=data)
+
+
+def _parse_setup_settings(payload: dict[str, Any] | None) -> SetupSettings:
+    """Parse setup settings from configuration."""
+    if not payload:
+        return SetupSettings()
+    
+    if not isinstance(payload, dict):
+        raise ValueError("setup_settings must be an object")
+    
+    session_timeout_minutes = payload.get("session_timeout_minutes", 30)
+    try:
+        session_timeout_minutes = int(session_timeout_minutes)
+        if session_timeout_minutes <= 0:
+            raise ValueError("session_timeout_minutes must be positive")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"setup_settings.session_timeout_minutes must be a positive integer") from exc
+    
+    default_mode = payload.get("default_mode", "modern")
+    if default_mode not in ("modern", "legacy"):
+        raise ValueError(f"setup_settings.default_mode must be 'modern' or 'legacy' (got {default_mode!r})")
+    
+    return SetupSettings(
+        session_timeout_minutes=session_timeout_minutes,
+        default_mode=default_mode
+    )
+
+
 def _validate_order_confirmation_template(template: str) -> None:
     """Validate that the order confirmation template contains required placeholders."""
     required_placeholders = {"{order_id}", "{service_name}", "{variant_name}", "{price}", "{eta}"}
@@ -359,4 +441,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         roles=_parse_roles(data.get("roles", [])),
         logging_channels=LoggingChannels(**data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),
+        category_ids=_parse_category_ids(data.get("category_ids")),
+        channel_ids=_parse_channel_ids(data.get("channel_ids")),
+        setup_settings=_parse_setup_settings(data.get("setup_settings")),
     )

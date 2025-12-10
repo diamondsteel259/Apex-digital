@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional, Any, Dict, List
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from apex_core.utils import create_embed, format_usd
+from apex_core.config_writer import ConfigWriter
 
 logger = logging.getLogger(__name__)
 
@@ -458,8 +460,12 @@ class SetupCog(commands.Cog):
         self.setup_sessions: dict[tuple[int, int], SetupSession] = {}
         # Keep legacy states for backward compatibility during migration
         self.user_states: dict[int, WizardState] = {}
-        # Clean up expired states every 5 minutes
+        # Config writer for persisting IDs
+        self.config_writer = ConfigWriter()
+        # Clean up expired states and sessions every 5 minutes
         self.bot.loop.create_task(self._cleanup_expired_states())
+        # Restore in-progress sessions on startup
+        self.bot.loop.create_task(self._restore_sessions_on_startup())
 
     def _is_admin(self, member: discord.Member | None) -> bool:
         if member is None:
@@ -775,6 +781,137 @@ class SetupCog(commands.Cog):
             await self._cleanup_wizard_state(user_id, "Manual expired cleanup")
 
         return len(expired_users)
+
+    async def _log_provisioned_ids(
+        self,
+        roles: Optional[Dict[str, int]] = None,
+        categories: Optional[Dict[str, int]] = None,
+        channels: Optional[Dict[str, int]] = None,
+    ) -> None:
+        """Log provisioned role and channel IDs to config.json for immediate use.
+        
+        Args:
+            roles: Mapping of role names to Discord role IDs
+            categories: Mapping of category names to Discord category IDs
+            channels: Mapping of channel names to Discord channel IDs
+        """
+        try:
+            updates_made = False
+            
+            if roles:
+                await self.config_writer.set_role_ids(roles, bot=self.bot)
+                updates_made = True
+                logger.info(f"Updated role_ids in config: {roles}")
+            
+            if categories:
+                await self.config_writer.set_category_ids(categories, bot=self.bot)
+                updates_made = True
+                logger.info(f"Updated category_ids in config: {categories}")
+            
+            if channels:
+                await self.config_writer.set_channel_ids(channels, bot=self.bot)
+                updates_made = True
+                logger.info(f"Updated channel_ids in config: {channels}")
+            
+            if updates_made:
+                logger.info("Provisioned IDs saved to config and reloaded in bot")
+        except Exception as e:
+            logger.error(f"Failed to log provisioned IDs to config: {e}")
+
+    async def _save_session_to_db(self, session: SetupSession) -> None:
+        """Save a setup session to the database for persistence."""
+        try:
+            # Calculate expiration time based on config
+            timeout_minutes = self.bot.config.setup_settings.session_timeout_minutes
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)).isoformat()
+            
+            # Serialize session data
+            session_payload = json.dumps({
+                "panel_types": session.panel_types,
+                "current_index": session.current_index,
+                "completed_panels": session.completed_panels,
+                "started_at": session.started_at.isoformat() if session.started_at else None,
+                "timestamp": session.timestamp.isoformat() if session.timestamp else None,
+            })
+            
+            completed_panels_json = json.dumps(session.completed_panels)
+            
+            # Create or update session in database
+            await self.bot.db.create_setup_session(
+                guild_id=session.guild_id,
+                user_id=session.user_id,
+                panel_types=session.panel_types,
+                session_payload=session_payload,
+                expires_at=expires_at,
+            )
+            
+            logger.debug(f"Saved setup session for guild {session.guild_id}, user {session.user_id}")
+        except Exception as e:
+            logger.error(f"Failed to save session to database: {e}")
+
+    async def _restore_sessions_on_startup(self) -> None:
+        """Restore in-progress setup sessions from the database on bot startup."""
+        try:
+            # Wait for bot to be ready
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(2)  # Give other cogs time to load
+            
+            # Get session timeout from config
+            timeout_minutes = self.bot.config.setup_settings.session_timeout_minutes
+            
+            # Get all active sessions from database
+            active_sessions = await self.bot.db.get_all_active_sessions()
+            
+            restored_count = 0
+            for session_data in active_sessions:
+                try:
+                    guild_id = session_data["guild_id"]
+                    user_id = session_data["user_id"]
+                    guild = self.bot.get_guild(guild_id)
+                    
+                    if not guild:
+                        # Guild not available, delete session
+                        await self.bot.db.delete_setup_session(guild_id, user_id)
+                        logger.warning(f"Deleted session for guild {guild_id} - guild not found")
+                        continue
+                    
+                    # Restore session into memory
+                    panel_types = json.loads(session_data["panel_types"])
+                    completed_panels = json.loads(session_data["completed_panels"]) if session_data["completed_panels"] else []
+                    current_index = session_data["current_index"]
+                    
+                    # Get eligible channels for this session
+                    eligible_channels = await self._precompute_eligible_channels(guild)
+                    
+                    # Recreate session object
+                    session = SetupSession(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        panel_types=panel_types,
+                        current_index=current_index,
+                        completed_panels=completed_panels,
+                        rollback_stack=[],
+                        eligible_channels=eligible_channels,
+                    )
+                    
+                    session_key = (guild_id, user_id)
+                    self.setup_sessions[session_key] = session
+                    restored_count += 1
+                    
+                    logger.info(f"Restored setup session for guild {guild_id}, user {user_id}")
+                except Exception as e:
+                    logger.error(f"Failed to restore session from database: {e}")
+            
+            if restored_count > 0:
+                logger.info(f"Restored {restored_count} setup sessions from database")
+            
+            # Clean up expired sessions from database
+            cleaned = await self.bot.db.cleanup_expired_sessions()
+            if cleaned > 0:
+                logger.info(f"Cleaned up {cleaned} expired sessions from database")
+                    
+        except Exception as e:
+            logger.error(f"Error restoring sessions on startup: {e}")
 
     async def _deploy_panel(self, panel_type: str, channel: discord.TextChannel, 
                           guild: discord.Guild, user_id: int) -> bool:
@@ -1612,6 +1749,9 @@ class SetupCog(commands.Cog):
             session_lock=asyncio.Lock(),
         )
         self.setup_sessions[session_key] = session
+        
+        # Save session to database for persistence across restarts
+        await self._save_session_to_db(session)
 
         # Show success message and start panel deployment
         first_panel = selected_panels[0]
@@ -1726,6 +1866,9 @@ class SetupCog(commands.Cog):
             # Update session state
             session.current_index += 1
             session.completed_panels.append(panel_type)
+
+            # Save updated session to database
+            await self._save_session_to_db(session)
 
             emoji = self._get_panel_emoji(panel_type)
             
