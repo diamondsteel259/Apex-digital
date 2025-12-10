@@ -74,10 +74,36 @@ class WizardState:
 
 
 class SetupOperationError(Exception):
-    """Custom exception for setup operation failures."""
-    def __init__(self, message: str, rollback_info: Optional[RollbackInfo] = None):
+    """Custom exception for setup operation failures with actionable error messages."""
+    
+    ERROR_TYPES = {
+        "permission": "🔒 Permission Error",
+        "database": "💾 Database Error",
+        "not_found": "🔍 Not Found",
+        "invalid_state": "⚠️ Invalid State",
+        "validation": "❌ Validation Error",
+        "timeout": "⏰ Timeout Error",
+        "unknown": "❓ Unknown Error"
+    }
+    
+    def __init__(self, message: str, error_type: str = "unknown", rollback_info: Optional[RollbackInfo] = None, actionable_suggestion: Optional[str] = None):
         super().__init__(message)
+        self.error_type = error_type
         self.rollback_info = rollback_info
+        self.actionable_suggestion = actionable_suggestion
+    
+    def format_for_user(self, is_slash: bool = True) -> str:
+        """Format error message for user display with actionable suggestions."""
+        error_prefix = self.ERROR_TYPES.get(self.error_type, self.ERROR_TYPES["unknown"])
+        formatted = f"{error_prefix}\n{str(self)}"
+        
+        if self.actionable_suggestion:
+            formatted += f"\n\n💡 **Suggestion:** {self.actionable_suggestion}"
+        
+        if self.error_type == "permission":
+            formatted += "\n\n📋 **Required Permissions:**\n• Manage Channels\n• Send Messages\n• Embed Links"
+        
+        return formatted
 
 
 class SetupMenuSelect(discord.ui.Select["SetupMenuView"]):
@@ -217,6 +243,141 @@ class PanelTypeModal(discord.ui.Modal, title="Select Panel Type"):
             return
 
         await cog._show_deployment_menu(interaction, self.panel_type.value)
+
+
+class ChannelSelectView(discord.ui.View):
+    """View with ChannelSelect for modern channel selection."""
+    
+    def __init__(self, panel_type: str, user_id: int, session: Optional[SetupSession] = None) -> None:
+        super().__init__(timeout=300)
+        self.panel_type = panel_type
+        self.user_id = user_id
+        self.session = session
+        self.selected_channel: Optional[discord.TextChannel] = None
+        
+        # Add channel select component
+        channel_select = discord.ui.ChannelSelect(
+            placeholder=f"Select channel for {panel_type.title()} panel",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1
+        )
+        channel_select.callback = self.channel_select_callback
+        self.add_item(channel_select)
+    
+    async def channel_select_callback(self, interaction: discord.Interaction) -> None:
+        """Handle channel selection."""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "You can't use this selector.", ephemeral=True
+            )
+            return
+        
+        # Get selected channel
+        selected = interaction.data.get("values", [])
+        if not selected:
+            await interaction.response.send_message(
+                "No channel selected. Please try again.", ephemeral=True
+            )
+            return
+        
+        channel_id = int(selected[0])
+        channel = interaction.guild.get_channel(channel_id)
+        
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Selected channel must be a text channel.", ephemeral=True
+            )
+            return
+        
+        self.selected_channel = channel
+        
+        # Show confirmation view
+        cog: SetupCog = interaction.client.get_cog("SetupCog")  # type: ignore
+        if not cog:
+            await interaction.response.send_message("Setup cog not loaded.", ephemeral=True)
+            return
+        
+        await cog._show_deployment_confirmation(
+            interaction, self.panel_type, channel, self.session
+        )
+    
+    async def on_timeout(self) -> None:
+        """Handle view timeout."""
+        try:
+            if hasattr(self, 'original_interaction') and self.original_interaction:
+                await self.original_interaction.followup.send(
+                    "⏰ Channel selection timed out. Please run setup again.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Failed to send timeout message: {e}")
+
+
+class ConfirmationView(discord.ui.View):
+    """View for confirming panel deployment with summary."""
+    
+    def __init__(self, panel_type: str, channel: discord.TextChannel, user_id: int, 
+                 session: Optional[SetupSession] = None, existing_panel: Optional[dict] = None) -> None:
+        super().__init__(timeout=180)
+        self.panel_type = panel_type
+        self.channel = channel
+        self.user_id = user_id
+        self.session = session
+        self.existing_panel = existing_panel
+        self.confirmed = False
+    
+    @discord.ui.button(label="✅ Confirm & Deploy", style=discord.ButtonStyle.success)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Confirm and proceed with deployment."""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "You can't use this button.", ephemeral=True
+            )
+            return
+        
+        # Defer the response for long-running deployment
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        cog: SetupCog = interaction.client.get_cog("SetupCog")  # type: ignore
+        if not cog:
+            await interaction.followup.send("Setup cog not loaded.", ephemeral=True)
+            return
+        
+        self.confirmed = True
+        self.stop()
+        
+        # Execute deployment with progress updates
+        await cog._execute_deployment_with_progress(
+            interaction, self.panel_type, self.channel, self.session
+        )
+    
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Cancel the deployment."""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "You can't use this button.", ephemeral=True
+            )
+            return
+        
+        await interaction.response.send_message(
+            f"❌ Deployment of {self.panel_type.title()} panel cancelled.",
+            ephemeral=True
+        )
+        self.stop()
+    
+    async def on_timeout(self) -> None:
+        """Handle view timeout."""
+        try:
+            if hasattr(self, 'original_interaction') and self.original_interaction:
+                await self.original_interaction.followup.send(
+                    "⏰ Confirmation timed out. Deployment cancelled.\n"
+                    "💡 **Tip:** Run setup again when you're ready to deploy.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Failed to send timeout message: {e}")
 
 
 class DeploymentSelectView(discord.ui.View):
@@ -402,19 +563,35 @@ class SetupCog(commands.Cog):
     async def _validate_operation_prerequisites(self, guild: discord.Guild, channel: discord.TextChannel) -> None:
         """Validate that all prerequisites are met for setup operations."""
         if not guild.me.guild_permissions.manage_channels:
-            raise SetupOperationError("Bot needs 'Manage Channels' permission")
+            raise SetupOperationError(
+                "Bot needs 'Manage Channels' permission",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Manage Channels' permission in Server Settings > Roles"
+            )
 
         if not channel.permissions_for(guild.me).send_messages:
-            raise SetupOperationError(f"Bot cannot send messages in {channel.mention}")
+            raise SetupOperationError(
+                f"Bot cannot send messages in {channel.mention}",
+                error_type="permission",
+                actionable_suggestion=f"Grant 'Send Messages' permission in {channel.mention}'s channel settings"
+            )
         
         if not channel.permissions_for(guild.me).embed_links:
-            raise SetupOperationError(f"Bot cannot embed links in {channel.mention}")
+            raise SetupOperationError(
+                f"Bot cannot embed links in {channel.mention}",
+                error_type="permission",
+                actionable_suggestion=f"Grant 'Embed Links' permission in {channel.mention}'s channel settings"
+            )
 
         # Test database connection
         try:
             await self.bot.db.get_deployments(guild.id)
         except Exception as e:
-            raise SetupOperationError(f"Database connection failed: {e}")
+            raise SetupOperationError(
+                f"Database connection failed: {e}",
+                error_type="database",
+                actionable_suggestion="Contact your system administrator to check database status"
+            )
 
     async def _precompute_eligible_channels(self, guild: discord.Guild) -> list[discord.TextChannel]:
         """Pre-compute eligible channels at setup start to surface permission issues early.
@@ -429,7 +606,11 @@ class SetupCog(commands.Cog):
             SetupOperationError: If bot lacks required permissions for the guild
         """
         if not guild.me.guild_permissions.manage_channels:
-            raise SetupOperationError("Bot needs 'Manage Channels' permission to setup panels")
+            raise SetupOperationError(
+                "Bot needs 'Manage Channels' permission to setup panels",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Manage Channels' permission in Server Settings > Roles"
+            )
 
         eligible_channels = []
         for channel in guild.text_channels:
@@ -440,7 +621,9 @@ class SetupCog(commands.Cog):
         if not eligible_channels:
             raise SetupOperationError(
                 "No eligible channels found. Bot needs 'Send Messages' and 'Embed Links' "
-                "permissions in at least one text channel."
+                "permissions in at least one text channel.",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Send Messages' and 'Embed Links' permissions in at least one text channel"
             )
         
         return eligible_channels
@@ -547,7 +730,11 @@ class SetupCog(commands.Cog):
             elif panel_type == "reviews":
                 embed, view = await self._create_reviews_panel()
             else:
-                raise SetupOperationError(f"Unknown panel type: {panel_type}")
+                raise SetupOperationError(
+                    f"Unknown panel type: {panel_type}",
+                    error_type="validation",
+                    actionable_suggestion="Valid panel types are: products, support, help, reviews"
+                )
 
             # Check if this is an update to an existing panel
             existing_panel = await self.bot.db.find_panel(panel_type, guild.id)
@@ -826,119 +1013,6 @@ class SetupCog(commands.Cog):
 
         return embed, discord.ui.View()
 
-    async def _deploy_panel(self, panel_type: str, channel: discord.TextChannel, 
-                          guild: discord.Guild, user_id: int) -> bool:
-        """Deploy a panel with atomic transaction support."""
-        
-        # Find existing session for this guild and user
-        session_key = self._get_session_key(guild.id, user_id)
-        session = self.setup_sessions.get(session_key)
-        
-        if not session:
-            logger.error(f"No setup session found for guild {guild.id}, user {user_id}")
-            return False
-
-        try:
-            # Get the panel embed and view
-            if panel_type == "products":
-                embed, view = await self._create_product_panel()
-            elif panel_type == "support":
-                embed, view = await self._create_support_panel()
-            elif panel_type == "help":
-                embed, view = await self._create_help_panel()
-            elif panel_type == "reviews":
-                embed, view = await self._create_reviews_panel()
-            else:
-                raise SetupOperationError(f"Unknown panel type: {panel_type}")
-
-            # Check if this is an update to an existing panel
-            existing_panel = await self.bot.db.find_panel(panel_type, guild.id)
-            previous_message_id = existing_panel["message_id"] if existing_panel else None
-            
-            # Store sent messages for rollback cleanup
-            sent_messages: list[tuple[int, int]] = []  # (channel_id, message_id)
-
-            async with self.bot.db.transaction() as tx:
-                # Send the panel message
-                message = await channel.send(embed=embed, view=view)
-                sent_messages.append((channel.id, message.id))
-                
-                # Create rollback info for message
-                message_rollback = RollbackInfo(
-                    operation_type="message_sent",
-                    panel_type=panel_type,
-                    channel_id=channel.id,
-                    message_id=message.id,
-                    guild_id=guild.id,
-                    user_id=user_id
-                )
-                session.rollback_stack.append(message_rollback)
-
-                if existing_panel:
-                    # Update existing panel
-                    await tx.execute(
-                        """
-                        UPDATE permanent_messages 
-                        SET message_id = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (message.id, existing_panel["id"])
-                    )
-                    
-                    # Add rollback info for panel update
-                    update_rollback = RollbackInfo(
-                        operation_type="panel_updated",
-                        panel_type=panel_type,
-                        panel_id=existing_panel["id"],
-                        previous_message_id=previous_message_id,
-                        guild_id=guild.id,
-                        user_id=user_id
-                    )
-                    session.rollback_stack.append(update_rollback)
-                else:
-                    # Create new panel record
-                    panel_id = await tx.execute_insert(
-                        """
-                        INSERT INTO permanent_messages 
-                        (type, message_id, channel_id, guild_id, title, description, created_by_staff_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (panel_type, message.id, channel.id, guild.id, embed.title, embed.description, user_id)
-                    )
-                    
-                    # Add rollback info for panel creation
-                    create_rollback = RollbackInfo(
-                        operation_type="panel_created",
-                        panel_type=panel_type,
-                        panel_id=panel_id,
-                        guild_id=guild.id,
-                        user_id=user_id
-                    )
-                    session.rollback_stack.append(create_rollback)
-
-            # Log successful deployment
-            await self._log_audit(
-                guild,
-                f"Panel Deployed: {panel_type}",
-                f"**Channel:** {channel.mention}\n**Message ID:** {message.id}"
-            )
-
-            return True
-
-        except Exception as e:
-            # Clean up any sent messages if transaction failed
-            for channel_id, message_id in sent_messages:
-                try:
-                    channel = self.bot.get_channel(channel_id)
-                    if isinstance(channel, discord.TextChannel):
-                        message = await channel.fetch_message(message_id)
-                        await message.delete()
-                except (discord.NotFound, discord.Forbidden, AttributeError):
-                    pass
-            
-            logger.error(f"Failed to deploy {panel_type} panel: {e}")
-            return False
-
     async def _handle_setup_selection(
         self, interaction: discord.Interaction, selection: str
     ) -> None:
@@ -953,7 +1027,11 @@ class SetupCog(commands.Cog):
         try:
             eligible_channels = await self._precompute_eligible_channels(interaction.guild)
         except SetupOperationError as e:
-            await interaction.response.send_message(f"❌ {str(e)}", ephemeral=True)
+            error_msg = e.format_for_user(is_slash=True)
+            await interaction.response.send_message(
+                f"❌ **Setup Failed**\n\n{error_msg}", 
+                ephemeral=True
+            )
             return
 
         # Create panel types list based on selection
@@ -988,29 +1066,43 @@ class SetupCog(commands.Cog):
         )
         self.setup_sessions[session_key] = session
 
-        # Show success message with eligible channels
-        channels_text = "\n".join([f"• {channel.mention}" for channel in eligible_channels[:5]])
-        if len(eligible_channels) > 5:
-            channels_text += f"\n... and {len(eligible_channels) - 5} more channels"
-
+        # Show success message and start panel deployment
+        first_panel = selected_panels[0]
+        emoji = self._get_panel_emoji(first_panel)
+        
         await interaction.response.send_message(
             f"✅ **Setup session started!**\n\n"
-            f"**Eligible channels found:** {len(eligible_channels)}\n"
-            f"{channels_text}\n\n"
+            f"**Eligible channels:** {len(eligible_channels)} found\n"
             f"**Setting up:** {', '.join([p.title() for p in selected_panels])}\n\n"
-            f"Now deploying **{selected_panels[0].title()}** panel...",
+            f"{emoji} **Starting with {first_panel.title()} panel...**",
             ephemeral=True
         )
 
-        # Start with the first panel deployment
-        await self._start_panel_deployment(interaction, selected_panels[0], session)
+        # Start with the first panel deployment using modern UI
+        await self._start_panel_deployment_slash(interaction, first_panel, session)
 
     async def _start_panel_deployment(self, interaction: discord.Interaction, 
                                     panel_type: str, session: SetupSession) -> None:
-        """Start panel deployment for a specific panel type."""
+        """Start panel deployment for a specific panel type (legacy modal approach)."""
         # Show channel selection modal with eligible channels
         modal = ChannelInputModal(panel_type, session)
         await interaction.followup.send_modal(modal)
+
+    async def _start_panel_deployment_slash(self, interaction: discord.Interaction, 
+                                          panel_type: str, session: SetupSession) -> None:
+        """Start panel deployment for slash commands using modern ChannelSelect UI."""
+        # Show modern channel select view
+        emoji = self._get_panel_emoji(panel_type)
+        view = ChannelSelectView(panel_type, interaction.user.id, session)
+        view.original_interaction = interaction
+        
+        await interaction.followup.send(
+            f"{emoji} **Select channel for {panel_type.title()} panel:**\n\n"
+            f"Use the dropdown below to select a text channel.\n"
+            f"Only channels where the bot has required permissions are shown.",
+            view=view,
+            ephemeral=True
+        )
 
     async def _process_channel_input(
         self, interaction: discord.Interaction, channel_input: str, 
@@ -1118,21 +1210,19 @@ class SetupCog(commands.Cog):
                 )
 
         except SetupOperationError as e:
-            error_msg = f"❌ Failed to deploy {panel_type} panel"
-            if "permission" in str(e).lower():
-                error_msg += f": {str(e)}"
-            else:
-                error_msg += ". The operation has been rolled back."
-            
-            await interaction.followup.send(error_msg, ephemeral=True)
-            
-            # Log the error for debugging
+            error_msg = e.format_for_user(is_slash=True)
+            await interaction.followup.send(
+                f"❌ **Deployment Failed**\n\n{error_msg}",
+                ephemeral=True
+            )
             logger.error(f"Setup operation failed for user {interaction.user.id}: {e}")
             
         except Exception as e:
             await interaction.followup.send(
-                f"❌ An unexpected error occurred while deploying the {panel_type} panel. "
-                "The operation has been rolled back.",
+                f"❌ **Unexpected Error**\n\n"
+                f"An unexpected error occurred while deploying the {panel_type} panel.\n"
+                f"The operation has been rolled back.\n\n"
+                f"💡 **Suggestion:** Try again or contact an administrator if the issue persists.",
                 ephemeral=True,
             )
             logger.error(f"Unexpected error in setup for user {interaction.user.id}: {e}")
@@ -1148,6 +1238,196 @@ class SetupCog(commands.Cog):
                 return channel
         
         return None
+
+    async def _show_deployment_confirmation(
+        self, interaction: discord.Interaction, panel_type: str, 
+        channel: discord.TextChannel, session: Optional[SetupSession] = None
+    ) -> None:
+        """Show confirmation view before deploying panel."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+        
+        # Check for existing panel
+        existing_panel = await self.bot.db.find_panel(panel_type, interaction.guild.id)
+        
+        # Build confirmation embed
+        emoji = self._get_panel_emoji(panel_type)
+        embed = create_embed(
+            title=f"{emoji} Confirm Panel Deployment",
+            description=f"Please review the deployment details below:",
+            color=discord.Color.blurple(),
+        )
+        
+        # Add operation type
+        if existing_panel:
+            embed.add_field(
+                name="📝 Operation Type",
+                value=f"**Update** existing {panel_type.title()} panel",
+                inline=False
+            )
+            embed.add_field(
+                name="📍 Current Location",
+                value=f"<#{existing_panel['channel_id']}> (Message ID: {existing_panel['message_id']})",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📝 Operation Type",
+                value=f"**Deploy** new {panel_type.title()} panel",
+                inline=False
+            )
+        
+        # Add target channel
+        embed.add_field(
+            name="🎯 Target Channel",
+            value=channel.mention,
+            inline=False
+        )
+        
+        # Add what will happen
+        changes = []
+        if existing_panel:
+            changes.append("• Old panel message will remain but be unlinked")
+            changes.append("• New panel message will be created in target channel")
+            changes.append("• Database will be updated to track new message")
+        else:
+            changes.append("• New panel message will be created")
+            changes.append("• Interactive components will be attached")
+            changes.append("• Panel will be registered in database")
+        
+        embed.add_field(
+            name="⚙️ What Will Happen",
+            value="\n".join(changes),
+            inline=False
+        )
+        
+        # Add session info if applicable
+        if session:
+            progress = f"{session.current_index + 1} / {len(session.panel_types)}"
+            embed.add_field(
+                name="📊 Session Progress",
+                value=f"Panel {progress}",
+                inline=False
+            )
+        
+        embed.set_footer(text="This action requires confirmation • 3 minutes to decide")
+        
+        # Create confirmation view
+        view = ConfirmationView(panel_type, channel, interaction.user.id, session, existing_panel)
+        view.original_interaction = interaction
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def _execute_deployment_with_progress(
+        self, interaction: discord.Interaction, panel_type: str, 
+        channel: discord.TextChannel, session: Optional[SetupSession] = None
+    ) -> None:
+        """Execute panel deployment with progress updates."""
+        if interaction.guild is None:
+            await interaction.followup.send(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+        
+        emoji = self._get_panel_emoji(panel_type)
+        
+        # Use provided session or look up by guild/user
+        if session is None:
+            session_key = self._get_session_key(interaction.guild.id, interaction.user.id)
+            session = self.setup_sessions.get(session_key)
+        
+        try:
+            # Step 1: Validate prerequisites
+            await interaction.followup.send(
+                f"{emoji} **Validating permissions...**",
+                ephemeral=True
+            )
+            await self._validate_operation_prerequisites(interaction.guild, channel)
+            
+            # Step 2: Create panel content
+            await interaction.edit_original_response(
+                content=f"{emoji} **Generating panel content...**"
+            )
+            
+            # Step 3: Deploy panel
+            await interaction.edit_original_response(
+                content=f"{emoji} **Deploying panel to {channel.mention}...**"
+            )
+            
+            success = await self._deploy_panel(
+                panel_type,
+                channel,
+                interaction.guild,
+                interaction.user.id,
+            )
+            
+            if not success:
+                raise SetupOperationError(
+                    f"Failed to deploy {panel_type} panel",
+                    error_type="unknown",
+                    actionable_suggestion="Try again or contact an administrator if the issue persists"
+                )
+            
+            # Update session if applicable
+            if session:
+                session.current_index += 1
+                session.completed_panels.append(panel_type)
+            
+            # Step 4: Success message with next steps
+            if session and session.current_index < len(session.panel_types):
+                next_panel = session.panel_types[session.current_index]
+                next_emoji = self._get_panel_emoji(next_panel)
+                
+                await interaction.edit_original_response(
+                    content=f"{emoji} ✅ **Panel deployed successfully!**\n\n"
+                            f"**Deployed to:** {channel.mention}\n"
+                            f"**Panel Type:** {panel_type.title()}\n\n"
+                            f"{next_emoji} **Next:** Ready to setup {next_panel.title()} panel"
+                )
+                
+                # Show channel select for next panel
+                view = ChannelSelectView(next_panel, interaction.user.id, session)
+                view.original_interaction = interaction
+                await interaction.followup.send(
+                    f"{next_emoji} **Select channel for {next_panel.title()} panel:**",
+                    view=view,
+                    ephemeral=True
+                )
+            else:
+                # All panels deployed or single panel
+                await interaction.edit_original_response(
+                    content=f"{emoji} ✅ **Panel deployed successfully!**\n\n"
+                            f"**Deployed to:** {channel.mention}\n"
+                            f"**Panel Type:** {panel_type.title()}\n\n"
+                            f"🎉 Setup complete!"
+                )
+                
+                # Clean up session if applicable
+                if session:
+                    await self._cleanup_setup_session(
+                        session.guild_id,
+                        session.user_id,
+                        "Setup completed successfully"
+                    )
+        
+        except SetupOperationError as e:
+            error_msg = e.format_for_user(is_slash=True)
+            await interaction.edit_original_response(
+                content=f"❌ **Deployment Failed**\n\n{error_msg}"
+            )
+            logger.error(f"Setup operation failed for user {interaction.user.id}: {e}")
+        
+        except Exception as e:
+            await interaction.edit_original_response(
+                content=f"❌ **Unexpected Error**\n\n"
+                        f"An unexpected error occurred while deploying the {panel_type} panel.\n"
+                        f"The operation has been rolled back.\n\n"
+                        f"💡 **Suggestion:** Try again or contact an administrator if the issue persists."
+            )
+            logger.error(f"Unexpected error in deployment for user {interaction.user.id}: {e}")
 
     async def _show_deployment_menu(
         self, interaction: discord.Interaction, panel_type_input: str
@@ -1238,7 +1518,95 @@ class SetupCog(commands.Cog):
         embed.set_footer(text="Select from dropdown to continue")
 
         view = SetupMenuView()
+        view.original_interaction = None  # Not from interaction
         await ctx.send(embed=embed, view=view)
+
+    @app_commands.command(name="setup", description="Interactive setup wizard for Apex Core panels")
+    @app_commands.guild_only()
+    async def setup_slash(self, interaction: discord.Interaction) -> None:
+        """Slash command entry point for setup wizard."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+        
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if not self._is_admin(member):
+            await interaction.response.send_message(
+                "Only admins can use this command.", ephemeral=True
+            )
+            return
+        
+        # Defer response for database queries
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        try:
+            # Pre-validate permissions early
+            eligible_channels = await self._precompute_eligible_channels(interaction.guild)
+            
+            # Get current deployments
+            deployments = await self.bot.db.get_deployments(interaction.guild.id)
+            panel_types = ["products", "support", "help", "reviews"]
+            deployed_types = {d["type"] for d in deployments}
+            
+            # Build status embed
+            embed = create_embed(
+                title="🔧 Apex Core Setup Wizard",
+                description="Current Deployments & Options",
+                color=discord.Color.blurple(),
+            )
+            
+            deployment_info = ""
+            for panel_type in panel_types:
+                emoji = self._get_panel_emoji(panel_type)
+                if panel_type in deployed_types:
+                    panel = next((d for d in deployments if d["type"] == panel_type), None)
+                    if panel:
+                        deployment_info += f"{emoji} ✅ {panel_type.title()} - <#{panel['channel_id']}>\n"
+                else:
+                    deployment_info += f"{emoji} ❌ {panel_type.title()} - Not deployed\n"
+            
+            embed.add_field(
+                name="Current Status",
+                value=deployment_info if deployment_info else "No panels deployed yet.",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="✅ Eligible Channels",
+                value=f"Found **{len(eligible_channels)}** channels with required permissions",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="What would you like to do?",
+                value="1️⃣ Product Catalog Panel (storefront)\n"
+                      "2️⃣ Support & Refund Buttons\n"
+                      "3️⃣ Help Guide\n"
+                      "4️⃣ Review System Guide\n"
+                      "5️⃣ All of the above",
+                inline=False,
+            )
+            embed.set_footer(text="Select from dropdown to continue • Modern UI with channel selector")
+            
+            view = SetupMenuView()
+            view.original_interaction = interaction
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except SetupOperationError as e:
+            error_msg = e.format_for_user(is_slash=True)
+            await interaction.followup.send(
+                f"❌ **Setup Failed**\n\n{error_msg}",
+                ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"Setup command failed for user {interaction.user.id}: {e}")
+            await interaction.followup.send(
+                "❌ An unexpected error occurred while loading setup wizard.\n\n"
+                "💡 **Suggestion:** Try again or contact an administrator.",
+                ephemeral=True
+            )
 
     @commands.command(name="setup-cleanup")
     async def setup_cleanup(self, ctx: commands.Context) -> None:
