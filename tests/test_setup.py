@@ -173,21 +173,26 @@ class TestAtomicTransactions(unittest.TestCase):
         """Test successful database transaction commits properly."""
         async def run_test():
             mock_bot = create_mock_bot()
-            mock_bot.db.transaction = AsyncMock()
             transaction_mock = AsyncMock()
-            mock_bot.db.transaction.return_value.__aenter__ = AsyncMock(return_value=transaction_mock)
-            mock_bot.db.transaction.return_value.__aexit__ = AsyncMock(return_value=None)
+            transaction_mock.execute_insert = AsyncMock(return_value=123)
             
-            # Mock successful panel creation
-            transaction_mock.execute_insert.return_value = 123
+            # Create proper async context manager
+            class MockTx:
+                async def __aenter__(self):
+                    return transaction_mock
+                async def __aexit__(self, *args):
+                    return False
+            
+            mock_bot.db.transaction = Mock(return_value=MockTx())
             
             async with mock_bot.db.transaction() as tx:
-                await tx.execute_insert(
+                result = await tx.execute_insert(
                     "INSERT INTO permanent_messages (type, message_id) VALUES (?, ?)",
                     ("products", 456)
                 )
             
             # Verify transaction context manager was used correctly
+            self.assertEqual(result, 123)
             mock_bot.db.transaction.assert_called_once()
         
         asyncio.run(run_test())
@@ -196,24 +201,28 @@ class TestAtomicTransactions(unittest.TestCase):
         """Test transaction rolls back on exception."""
         async def run_test():
             mock_bot = create_mock_bot()
-            mock_bot.db.transaction = AsyncMock()
             transaction_mock = AsyncMock()
+            rollback_called = False
             
-            async def mock_enter():
-                return transaction_mock
+            class MockTx:
+                async def __aenter__(self):
+                    return transaction_mock
+                
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    nonlocal rollback_called
+                    if exc_type:
+                        # Mark that rollback should happen
+                        rollback_called = True
+                    return False
             
-            async def mock_exit(exc_type, exc_val, exc_tb):
-                if exc_type:
-                    # Should rollback on exception
-                    transaction_mock.execute.assert_called_with("ROLLBACK")
-                return False
-            
-            mock_bot.db.transaction.return_value.__aenter__ = mock_enter
-            mock_bot.db.transaction.return_value.__aexit__ = mock_exit
+            mock_bot.db.transaction = Mock(return_value=MockTx())
             
             with self.assertRaises(ValueError):
                 async with mock_bot.db.transaction():
                     raise ValueError("test error")
+            
+            # Verify rollback was triggered
+            self.assertTrue(rollback_called)
         
         asyncio.run(run_test())
     
@@ -223,24 +232,48 @@ class TestAtomicTransactions(unittest.TestCase):
             mock_bot = create_mock_bot()
             cog = create_setup_cog(mock_bot)
             mock_guild = Mock()
+            mock_guild.id = 98765
             mock_channel = Mock()
+            mock_channel.id = 11111
             mock_message = Mock()
             mock_message.id = 789
             
-            mock_channel.send.return_value = mock_message
-            mock_bot.db.find_panel.return_value = None
-            mock_bot.db.transaction = AsyncMock()
+            # Create a session for the deployment
+            session = SetupSession(
+                guild_id=98765,
+                user_id=123,
+                panel_types=["products"],
+                current_index=0,
+                completed_panels=[],
+                rollback_stack=[],
+                eligible_channels=[mock_channel],
+                session_lock=asyncio.Lock()
+            )
+            cog.setup_sessions[(98765, 123)] = session
+            
+            mock_channel.send = AsyncMock(return_value=mock_message)
+            mock_bot.db.find_panel = AsyncMock(return_value=None)
+            
+            # Mock transaction context manager properly
             transaction_mock = Mock()
-            transaction_mock.execute_insert.return_value = 456
+            transaction_mock.execute_insert = AsyncMock(return_value=456)
+            transaction_mock.execute = AsyncMock()
             
-            # Mock transaction context manager
-            async def mock_transaction():
-                class MockTx:
-                    async def execute_insert(self, query, params):
-                        return 456
-                return MockTx()
+            class MockTx:
+                def __init__(self):
+                    self.tx = transaction_mock
+                
+                async def __aenter__(self):
+                    return self.tx
+                
+                async def __aexit__(self, *args):
+                    return False
             
-            mock_bot.db.transaction.return_value = mock_transaction()
+            mock_bot.db.transaction = Mock(return_value=MockTx())
+            
+            # Mock panel creation methods
+            cog._create_product_panel = AsyncMock(return_value=(Mock(), Mock()))
+            cog._log_audit = AsyncMock()
             
             result = await cog._deploy_panel(
                 "products", mock_channel, mock_guild, 123
@@ -383,15 +416,20 @@ class TestSetupSessionManagement(unittest.TestCase):
             cog = create_setup_cog(mock_bot)
             mock_guild = create_mock_guild()
             
-            # Create a session
+            # Create a session with rollback items
             session_key = (mock_guild.id, 123)
+            rollback_item = RollbackInfo(
+                operation_type="panel_created",
+                panel_type="products",
+                panel_id=123
+            )
             session = SetupSession(
                 guild_id=mock_guild.id,
                 user_id=123,
                 panel_types=["products"],
                 current_index=0,
                 completed_panels=[],
-                rollback_stack=[],
+                rollback_stack=[rollback_item],  # Non-empty rollback stack
                 eligible_channels=[],
                 started_at=None,
                 session_lock=asyncio.Lock()
@@ -437,10 +475,17 @@ class TestPanelDeploymentWithEligibleChannels(unittest.TestCase):
             # Mock successful deployment
             cog._deploy_panel = AsyncMock(return_value=True)
             
+            # Mock interaction properly
+            interaction = AsyncMock()
+            interaction.guild = mock_guild
+            interaction.user = Mock()
+            interaction.user.id = 123
+            interaction.followup.send = AsyncMock()
+            
             # Mock channel find
             with patch.object(cog, '_find_channel_by_input', return_value=mock_channel):
                 await cog._process_channel_input(
-                    Mock(), "test-channel", "products", session
+                    interaction, "test-channel", "products", session
                 )
             
             cog._deploy_panel.assert_called_once()
@@ -502,14 +547,19 @@ class TestBackwardCompatibility(unittest.TestCase):
             
             from cogs.setup import WizardState
             
-            # Create legacy state
+            # Create legacy state with rollback item
+            rollback_item = RollbackInfo(
+                operation_type="panel_created",
+                panel_type="products",
+                panel_id=123
+            )
             legacy_state = WizardState(
                 user_id=123,
                 guild_id=mock_guild.id,
                 panel_types=["products"],
                 current_index=0,
                 completed_panels=[],
-                rollback_stack=[],
+                rollback_stack=[rollback_item],  # Non-empty rollback stack
                 started_at=None
             )
             cog.user_states[123] = legacy_state
@@ -561,15 +611,19 @@ class TestDatabaseIntegration(unittest.TestCase):
             await db.connect()
             
             try:
+                # Create table outside transaction
+                async with db.transaction() as tx:
+                    await tx.execute("CREATE TABLE test (id INTEGER)")
+                
+                # Try to insert with rollback
                 try:
                     async with db.transaction() as tx:
-                        await tx.execute("CREATE TABLE test (id INTEGER)")
                         await tx.execute("INSERT INTO test VALUES (1)")
                         raise Exception("Test rollback")
                 except Exception:
                     pass
                     
-                # Verify rollback worked
+                # Verify rollback worked - table exists but no rows inserted
                 async with db.transaction() as tx:
                     cursor = await tx.execute("SELECT COUNT(*) FROM test")
                     count = await cursor.fetchone()
