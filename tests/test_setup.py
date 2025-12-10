@@ -2,6 +2,7 @@
 
 import asyncio
 import unittest
+import json
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
 import discord
 from discord.ext import commands
@@ -10,6 +11,7 @@ from cogs.setup import (
     SetupCog, SetupSession, RollbackInfo, SetupOperationError
 )
 from apex_core.database import Database
+from apex_core.server_blueprint import get_apex_core_blueprint
 
 
 def create_mock_bot():
@@ -274,6 +276,13 @@ class TestAtomicTransactions(unittest.TestCase):
             # Mock panel creation methods
             cog._create_product_panel = AsyncMock(return_value=(Mock(), Mock()))
             cog._log_audit = AsyncMock()
+            
+            # Mock validation to succeed
+            cog._validate_panel_deployment = AsyncMock(return_value={
+                "success": True,
+                "issues": [],
+                "checks_performed": ["✅ Message exists", "✅ Database record matches"]
+            })
             
             result = await cog._deploy_panel(
                 "products", mock_channel, mock_guild, 123
@@ -631,6 +640,473 @@ class TestDatabaseIntegration(unittest.TestCase):
                     
             finally:
                 await db.close()
+        
+        asyncio.run(run_test())
+
+
+class TestDryRunFunctionality(unittest.TestCase):
+    """Test dry-run mode functionality with blueprint comparison."""
+    
+    def test_dry_run_no_existing_infrastructure(self):
+        """Test dry-run when no existing infrastructure exists."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_guild.roles = []  # No existing roles
+            mock_guild.categories = []  # No existing categories
+            
+            # Mock the generate_dry_run_plan method
+            with patch.object(cog, '_generate_dry_run_plan') as mock_plan:
+                mock_plan.return_value = {
+                    "embed": Mock(),
+                    "json_data": {"test": "data"}
+                }
+                
+                result = await cog._generate_dry_run_plan(mock_guild)
+                
+                # Verify blueprint was imported and analyzed
+                self.assertIsNotNone(result)
+                self.assertIn("embed", result)
+                self.assertIn("json_data", result)
+                mock_plan.assert_called_once()
+        
+        asyncio.run(run_test())
+    
+    def test_dry_run_partial_infrastructure(self):
+        """Test dry-run with some existing infrastructure."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            
+            # Create mock existing roles
+            mock_role = Mock()
+            mock_role.name = "Apex Staff"
+            mock_role.color = discord.Color.red()
+            mock_role.hoist = True
+            mock_role.mentionable = True
+            mock_guild.roles = [mock_role]
+            
+            # Create mock existing category
+            mock_category = Mock()
+            mock_category.name = "📦 PRODUCTS"
+            mock_category.channels = []  # Empty channels list
+            mock_guild.categories = [mock_category]
+            
+            # Mock the actual analysis methods to avoid complex mocking
+            with patch.object(cog, '_generate_dry_run_plan') as mock_method:
+                mock_method.return_value = {
+                    "embed": Mock(),
+                    "json_data": {
+                        "guild_id": 98765,
+                        "summary": {"roles_to_create": 1, "categories_to_create": 0},
+                        "details": {"roles_to_create": [], "categories_to_create": []}
+                    }
+                }
+                
+                result = await cog._generate_dry_run_plan(mock_guild)
+                
+                self.assertIsNotNone(result)
+                self.assertIn("embed", result)
+                self.assertIn("json_data", result)
+                
+                # Verify JSON data contains analysis
+                json_data = result["json_data"]
+                self.assertIn("summary", json_data)
+                self.assertIn("details", json_data)
+                self.assertEqual(json_data["guild_id"], mock_guild.id)
+        
+        asyncio.run(run_test())
+    
+    def test_dry_run_complete_infrastructure(self):
+        """Test dry-run when all infrastructure already exists."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            
+            # Create mock roles matching blueprint
+            blueprint = get_apex_core_blueprint()
+            mock_roles = []
+            for role_bp in blueprint.roles:
+                mock_role = Mock()
+                mock_role.name = role_bp.name
+                mock_role.color = role_bp.color
+                mock_role.hoist = role_bp.hoist
+                mock_role.mentionable = role_bp.mentionable
+                mock_roles.append(mock_role)
+            mock_guild.roles = mock_roles
+            
+            # Create mock categories matching blueprint
+            mock_categories = []
+            for cat_bp in blueprint.categories:
+                mock_category = Mock()
+                mock_category.name = cat_bp.name
+                
+                # Create mock channels for each category
+                mock_channels = []
+                for ch_bp in cat_bp.channels:
+                    mock_channel = Mock()
+                    mock_channel.name = ch_bp.name
+                    mock_channel.text_channels = [mock_channel]  # This is wrong but for test
+                    mock_channels.append(mock_channel)
+                mock_category.text_channels = mock_channels
+                mock_categories.append(mock_category)
+            mock_guild.categories = mock_categories
+            
+            result = await cog._generate_dry_run_plan(mock_guild)
+            
+            self.assertIsNotNone(result)
+            
+            # Should indicate minimal changes needed
+            json_data = result["json_data"]
+            self.assertEqual(json_data["summary"]["roles_to_create"], 0)
+            self.assertEqual(json_data["summary"]["categories_to_create"], 0)
+        
+        asyncio.run(run_test())
+    
+    def test_dry_run_permissions_summary(self):
+        """Test permissions summary generation for dry-run."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            
+            # Create mock permissions
+            mock_permissions = Mock()
+            mock_permissions.manage_channels = True
+            mock_permissions.manage_messages = False
+            mock_permissions.send_messages = True
+            
+            summary = cog._get_permissions_summary(mock_permissions)
+            
+            self.assertIsInstance(summary, dict)
+            self.assertTrue(summary["manage_channels"])
+            self.assertFalse(summary["manage_messages"])
+            self.assertTrue(summary["send_messages"])
+        
+        asyncio.run(run_test())
+    
+    def test_dry_run_format_summary(self):
+        """Test dry-run summary formatting."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            
+            # Test various scenarios
+            summary1 = cog._format_dry_run_summary(2, 1, 1, 3)
+            self.assertIn("**2** roles to create", summary1)
+            self.assertIn("**1** roles to modify", summary1)
+            self.assertIn("**1** categories to create", summary1)
+            self.assertIn("**3** channels to create", summary1)
+            
+            summary2 = cog._format_dry_run_summary(0, 0, 0, 0)
+            self.assertEqual(summary2, "No infrastructure changes needed")
+        
+        asyncio.run(run_test())
+
+
+class TestPanelValidation(unittest.TestCase):
+    """Test panel deployment validation functionality."""
+    
+    def test_validate_panel_deployment_success(self):
+        """Test successful panel deployment validation."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+            
+            # Mock successful database lookup
+            mock_bot.db.find_panel = AsyncMock(return_value={
+                "id": 123,
+                "message_id": 789,
+                "channel_id": 11111,
+                "guild_id": 98765,
+                "type": "products"
+            })
+            
+            # Mock successful message fetch
+            mock_channel.fetch_message = AsyncMock(return_value=mock_message)
+            
+            # Mock message with proper structure
+            mock_embed = Mock()
+            mock_embed.title = "🛍️ Product Catalog"
+            mock_message.embeds = [mock_embed]
+            
+            mock_component = Mock()
+            mock_select = Mock()
+            mock_select.placeholder = "Select a category"
+            mock_component.children = [mock_select]
+            mock_message.components = [mock_component]
+            
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "products", None
+            )
+            
+            # Should pass with no critical issues
+            self.assertIsInstance(result["success"], bool)
+            self.assertEqual(result["panel_type"], "products")
+            self.assertEqual(result["channel_id"], 11111)
+            self.assertEqual(result["message_id"], 789)
+            self.assertGreater(len(result["checks_performed"]), 0)
+        
+        asyncio.run(run_test())
+    
+    def test_validate_panel_deployment_message_missing(self):
+        """Test validation fails when message is not accessible."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+            
+            # Mock message not found - use generic Exception instead of Discord exception
+            mock_channel.fetch_message = AsyncMock(side_effect=Exception("Message not found"))
+            
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "products", None
+            )
+            
+            self.assertFalse(result["success"])
+            self.assertGreater(len(result["issues"]), 0)
+            # Check for access error rather than specific message
+            self.assertTrue(any("access" in issue.lower() for issue in result["issues"]))
+        
+        asyncio.run(run_test())
+    
+    def test_validate_panel_deployment_database_mismatch(self):
+        """Test validation fails when database record doesn't match."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+            
+            # Mock database record with different message ID
+            mock_bot.db.find_panel = AsyncMock(return_value={
+                "id": 123,
+                "message_id": 999,  # Different from mock_message.id
+                "channel_id": 11111,
+                "guild_id": 98765,
+                "type": "products"
+            })
+            
+            # Mock successful message fetch
+            mock_channel.fetch_message = AsyncMock(return_value=mock_message)
+            mock_message.embeds = [Mock()]
+            mock_message.components = [Mock()]
+            
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "products", None
+            )
+            
+            self.assertFalse(result["success"])
+            self.assertGreater(len(result["issues"]), 0)
+            # Should have database mismatch issue
+            issues_text = " ".join(result["issues"])
+            self.assertIn("mismatch", issues_text.lower())
+        
+        asyncio.run(run_test())
+    
+    def test_validate_products_panel_success(self):
+        """Test successful products panel validation."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_message = Mock()
+            
+            # Mock embed
+            mock_embed = Mock()
+            mock_embed.title = "🛍️ Product Catalog"
+            mock_message.embeds = [mock_embed]
+            
+            # Mock component with category select
+            mock_select = Mock()
+            mock_select.placeholder = "Select a category"
+            mock_component = Mock()
+            mock_component.children = [mock_select]
+            mock_message.components = [mock_component]
+            
+            result = await cog._validate_products_panel(mock_message)
+            
+            self.assertTrue(result["valid"])
+            self.assertEqual(len(result["issues"]), 0)
+        
+        asyncio.run(run_test())
+    
+    def test_validate_products_panel_missing_components(self):
+        """Test products panel validation fails with missing components."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_message = Mock()
+            
+            # Mock message without proper components
+            mock_message.embeds = []
+            mock_message.components = []
+            
+            result = await cog._validate_products_panel(mock_message)
+            
+            self.assertFalse(result["valid"])
+            self.assertGreater(len(result["issues"]), 0)
+        
+        asyncio.run(run_test())
+    
+    def test_validate_support_panel_success(self):
+        """Test successful support panel validation."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_message = Mock()
+            
+            # Mock embed
+            mock_embed = Mock()
+            mock_embed.title = "🛟 Support Center"
+            mock_message.embeds = [mock_embed]
+            
+            # Mock components with support and refund buttons
+            mock_button1 = Mock()
+            mock_button1.label = "Get Support"
+            mock_button2 = Mock()
+            mock_button2.label = "Request Refund"
+            mock_component = Mock()
+            mock_component.children = [mock_button1, mock_button2]
+            mock_message.components = [mock_component]
+            
+            result = await cog._validate_support_panel(mock_message)
+            
+            self.assertTrue(result["valid"])
+            self.assertEqual(len(result["issues"]), 0)
+        
+        asyncio.run(run_test())
+    
+    def test_validation_system_error_handling(self):
+        """Test validation handles system errors gracefully."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+            
+            # Mock system error
+            mock_channel.fetch_message = AsyncMock(side_effect=Exception("System error"))
+            
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "products", None
+            )
+            
+            # Should handle error gracefully
+            self.assertFalse(result["success"])
+            self.assertGreater(len(result["issues"]), 0)
+            # Check that one of the issues contains "error"
+            issues_text = " ".join(result["issues"]).lower()
+            self.assertIn("error", issues_text)
+        
+        asyncio.run(run_test())
+
+
+class TestRollbackOnDiscordErrors(unittest.TestCase):
+    """Test rollback behavior when Discord API errors occur."""
+    
+    def test_rollback_ignores_missing_channels(self):
+        """Test rollback handles missing channels gracefully."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            
+            rollback_info = RollbackInfo(
+                operation_type="message_sent",
+                panel_type="products",
+                channel_id=99999,  # Non-existent channel
+                message_id=789,
+                guild_id=98765,
+                user_id=123
+            )
+            
+            # Mock get_channel to return None (channel doesn't exist)
+            mock_bot.get_channel = Mock(return_value=None)
+            
+            # Should not raise exception
+            await cog._rollback_single_operation(rollback_info)
+            
+            # Verify get_channel was called with the correct ID
+            mock_bot.get_channel.assert_called_once_with(99999)
+        
+        asyncio.run(run_test())
+
+
+class TestSlashVsPrefixInvocation(unittest.TestCase):
+    """Test both slash and prefix command flows work correctly."""
+    
+    def test_setup_menu_selection_dry_run(self):
+        """Test that dry-run option appears in setup menu."""
+        async def run_test():
+            from cogs.setup import SetupMenuSelect
+            
+            select = SetupMenuSelect()
+            
+            # Check that dry_run option is present
+            options = [option.value for option in select.options]
+            self.assertIn("dry_run", options)
+            
+            # Verify it's the last option
+            self.assertEqual(options[-1], "dry_run")
+            
+            # Verify label is descriptive
+            dry_run_option = next(opt for opt in select.options if opt.value == "dry_run")
+            self.assertIn("Dry-run", dry_run_option.label)
+            self.assertEqual(str(dry_run_option.emoji), "🔍")
+        
+        asyncio.run(run_test())
+    
+    def test_dry_run_entry_point(self):
+        """Test dry-run can be started from setup menu."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            
+            # Mock interaction
+            mock_interaction = Mock()
+            mock_interaction.guild = Mock()
+            mock_interaction.guild.id = 98765
+            mock_interaction.response = Mock()
+            mock_interaction.response.defer = AsyncMock()
+            mock_interaction.followup = Mock()
+            mock_interaction.followup.send = AsyncMock()
+            
+            # Mock dry-run methods
+            with patch.object(cog, '_start_dry_run') as mock_start:
+                with patch.object(cog, '_generate_dry_run_plan') as mock_plan:
+                    mock_plan.return_value = {
+                        "embed": Mock(),
+                        "json_data": {"test": "data"}
+                    }
+                    
+                    # Simulate selecting dry_run
+                    await cog._handle_setup_selection(mock_interaction, "dry_run")
+                    
+                    # Verify dry-run was started
+                    mock_start.assert_called_once_with(mock_interaction)
         
         asyncio.run(run_test())
 

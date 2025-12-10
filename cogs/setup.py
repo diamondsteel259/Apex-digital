@@ -123,6 +123,7 @@ class SetupMenuSelect(discord.ui.Select["SetupMenuView"]):
             discord.SelectOption(label="Review System Guide", value="reviews", emoji="4️⃣"),
             discord.SelectOption(label="All of the above", value="all", emoji="5️⃣"),
             discord.SelectOption(label="🏗️ Full server setup (roles + channels + panels)", value="full_server", emoji="🏗️"),
+            discord.SelectOption(label="🔍 Dry-run: Preview changes without deploying", value="dry_run", emoji="🔍"),
         ]
         super().__init__(
             placeholder="Select what to setup...",
@@ -1007,14 +1008,28 @@ class SetupCog(commands.Cog):
                     )
                     session.rollback_stack.append(create_rollback)
 
-            # Log successful deployment
-            await self._log_audit(
-                guild,
-                f"Panel Deployed: {panel_type}",
-                f"**Channel:** {channel.mention}\n**Message ID:** {message.id}"
+            # Perform post-deployment validation
+            validation_result = await self._validate_panel_deployment(
+                guild, channel, message, panel_type, existing_panel
             )
-
-            return True
+            
+            if validation_result["success"]:
+                # Log successful deployment
+                await self._log_audit(
+                    guild,
+                    f"Panel Deployed: {panel_type}",
+                    f"**Channel:** {channel.mention}\n**Message ID:** {message.id}"
+                )
+                return True
+            else:
+                # Validation failed, log the error and rollback
+                await self._log_audit(
+                    guild,
+                    f"Panel Deployment Validation Failed: {panel_type}",
+                    f"**Channel:** {channel.mention}\n**Issues:** {validation_result['issues']}"
+                )
+                logger.error(f"Panel validation failed for {panel_type} panel: {validation_result['issues']}")
+                return False
 
         except Exception as e:
             # Clean up any sent messages if transaction failed
@@ -1050,6 +1065,259 @@ class SetupCog(commands.Cog):
             await audit_channel.send(embed=embed)
         except Exception as e:
             logger.error(f"Failed to log audit: {e}")
+
+    async def _validate_panel_deployment(self, guild: discord.Guild, 
+                                        channel: discord.TextChannel,
+                                        message: discord.Message,
+                                        panel_type: str,
+                                        existing_panel: Optional[dict]) -> dict:
+        """Validate that panel deployment was successful with all checks."""
+        issues = []
+        checks_performed = []
+        
+        try:
+            # Check 1: Message exists and is accessible
+            try:
+                # Try to refetch the message to ensure it exists
+                fetched_message = await channel.fetch_message(message.id)
+                checks_performed.append("✅ Message exists and accessible")
+                
+                # Check that the message has the expected embed
+                if fetched_message.embeds:
+                    checks_performed.append("✅ Message has embed")
+                else:
+                    issues.append("Message missing embed")
+                    
+                # Check that the message has a view (components)
+                if fetched_message.components:
+                    checks_performed.append("✅ Message has interactive components")
+                else:
+                    issues.append("Message missing interactive components")
+                    
+            except discord.NotFound:
+                issues.append("Message not found in channel")
+            except discord.Forbidden:
+                issues.append("No permission to access deployed message")
+            except Exception as e:
+                issues.append(f"Error accessing message: {e}")
+            
+            # Check 2: Database record validation
+            try:
+                current_panel = await self.bot.db.find_panel(panel_type, guild.id)
+                if current_panel:
+                    if current_panel["message_id"] == message.id:
+                        checks_performed.append("✅ Database record matches message ID")
+                    else:
+                        issues.append(f"Database message ID mismatch: {current_panel['message_id']} != {message.id}")
+                        
+                    if current_panel["channel_id"] == channel.id:
+                        checks_performed.append("✅ Database record matches channel ID")
+                    else:
+                        issues.append(f"Database channel ID mismatch: {current_panel['channel_id']} != {channel.id}")
+                        
+                    if current_panel["guild_id"] == guild.id:
+                        checks_performed.append("✅ Database record matches guild ID")
+                    else:
+                        issues.append(f"Database guild ID mismatch: {current_panel['guild_id']} != {guild.id}")
+                else:
+                    issues.append("No database record found for panel")
+            except Exception as e:
+                issues.append(f"Database validation error: {e}")
+            
+            # Check 3: Panel type specific validation
+            if panel_type == "products":
+                validation_result = await self._validate_products_panel(message)
+                if validation_result["valid"]:
+                    checks_performed.append("✅ Products panel components working")
+                else:
+                    issues.extend(validation_result["issues"])
+                    
+            elif panel_type == "support":
+                validation_result = await self._validate_support_panel(message)
+                if validation_result["valid"]:
+                    checks_performed.append("✅ Support panel components working")
+                else:
+                    issues.extend(validation_result["issues"])
+                    
+            elif panel_type == "help":
+                validation_result = await self._validate_help_panel(message)
+                if validation_result["valid"]:
+                    checks_performed.append("✅ Help panel components working")
+                else:
+                    issues.extend(validation_result["issues"])
+                    
+            elif panel_type == "reviews":
+                validation_result = await self._validate_reviews_panel(message)
+                if validation_result["valid"]:
+                    checks_performed.append("✅ Reviews panel components working")
+                else:
+                    issues.extend(validation_result["issues"])
+            
+            # Determine overall success
+            is_success = len(issues) == 0
+            
+            # Log validation results
+            if is_success:
+                logger.info(f"Panel validation passed for {panel_type} panel in {channel.name}")
+            else:
+                logger.warning(f"Panel validation failed for {panel_type} panel in {channel.name}: {issues}")
+            
+            return {
+                "success": is_success,
+                "issues": issues,
+                "checks_performed": checks_performed,
+                "panel_type": panel_type,
+                "channel_id": channel.id,
+                "message_id": message.id,
+                "validation_timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            error_msg = f"Panel validation error for {panel_type}: {e}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "issues": [f"Validation system error: {e}"],
+                "checks_performed": checks_performed,
+                "panel_type": panel_type,
+                "channel_id": channel.id,
+                "message_id": message.id,
+                "validation_timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+    async def _validate_products_panel(self, message: discord.Message) -> dict:
+        """Validate products panel specific components."""
+        issues = []
+        
+        try:
+            # Check for expected components in products panel
+            if not message.embeds:
+                issues.append("Missing embed")
+                return {"valid": False, "issues": issues}
+                
+            embed = message.embeds[0]
+            if not embed.title or "product" not in embed.title.lower():
+                issues.append("Invalid or missing product panel title")
+            
+            # Check for category select dropdown
+            has_category_select = False
+            for component in message.components:
+                if hasattr(component, 'children'):
+                    for child in component.children:
+                        if hasattr(child, 'placeholder') and "category" in child.placeholder.lower():
+                            has_category_select = True
+                            break
+            
+            if not has_category_select:
+                issues.append("Missing category selection dropdown")
+            
+            return {"valid": len(issues) == 0, "issues": issues}
+            
+        except Exception as e:
+            return {"valid": False, "issues": [f"Products panel validation error: {e}"]}
+
+    async def _validate_support_panel(self, message: discord.Message) -> dict:
+        """Validate support panel specific components."""
+        issues = []
+        
+        try:
+            if not message.embeds:
+                issues.append("Missing embed")
+                return {"valid": False, "issues": issues}
+                
+            embed = message.embeds[0]
+            if not embed.title or "support" not in embed.title.lower():
+                issues.append("Invalid or missing support panel title")
+            
+            # Check for support buttons
+            support_buttons_found = False
+            refund_buttons_found = False
+            
+            for component in message.components:
+                if hasattr(component, 'children'):
+                    for child in component.children:
+                        if hasattr(child, 'label'):
+                            label = child.label.lower()
+                            if "support" in label:
+                                support_buttons_found = True
+                            elif "refund" in label:
+                                refund_buttons_found = True
+            
+            if not support_buttons_found:
+                issues.append("Missing support button")
+            if not refund_buttons_found:
+                issues.append("Missing refund button")
+            
+            return {"valid": len(issues) == 0, "issues": issues}
+            
+        except Exception as e:
+            return {"valid": False, "issues": [f"Support panel validation error: {e}"]}
+
+    async def _validate_help_panel(self, message: discord.Message) -> dict:
+        """Validate help panel specific components."""
+        issues = []
+        
+        try:
+            if not message.embeds:
+                issues.append("Missing embed")
+                return {"valid": False, "issues": issues}
+                
+            embed = message.embeds[0]
+            if not embed.title or "help" not in embed.title.lower():
+                issues.append("Invalid or missing help panel title")
+            
+            # Check for help sections buttons
+            help_buttons_found = False
+            
+            for component in message.components:
+                if hasattr(component, 'children'):
+                    for child in component.children:
+                        if hasattr(child, 'label'):
+                            label = child.label.lower()
+                            if any(section in label for section in ["getting started", "troubleshooting", "faq"]):
+                                help_buttons_found = True
+                                break
+            
+            if not help_buttons_found:
+                issues.append("Missing help section buttons")
+            
+            return {"valid": len(issues) == 0, "issues": issues}
+            
+        except Exception as e:
+            return {"valid": False, "issues": [f"Help panel validation error: {e}"]}
+
+    async def _validate_reviews_panel(self, message: discord.Message) -> dict:
+        """Validate reviews panel specific components."""
+        issues = []
+        
+        try:
+            if not message.embeds:
+                issues.append("Missing embed")
+                return {"valid": False, "issues": issues}
+                
+            embed = message.embeds[0]
+            if not embed.title or "review" not in embed.title.lower():
+                issues.append("Invalid or missing reviews panel title")
+            
+            # Check for review buttons
+            review_buttons_found = False
+            
+            for component in message.components:
+                if hasattr(component, 'children'):
+                    for child in component.children:
+                        if hasattr(child, 'label'):
+                            label = child.label.lower()
+                            if any(action in label for action in ["write review", "view reviews"]):
+                                review_buttons_found = True
+                                break
+            
+            if not review_buttons_found:
+                issues.append("Missing review action buttons")
+            
+            return {"valid": len(issues) == 0, "issues": issues}
+            
+        except Exception as e:
+            return {"valid": False, "issues": [f"Reviews panel validation error: {e}"]}
 
     def _get_panel_emoji(self, panel_type: str) -> str:
         """Get emoji for panel type."""
@@ -1705,6 +1973,11 @@ class SetupCog(commands.Cog):
         # Handle full server setup differently
         if selection == "full_server":
             await self._start_full_server_setup(interaction)
+            return
+
+        # Handle dry-run differently
+        if selection == "dry_run":
+            await self._start_dry_run(interaction)
             return
 
         # Pre-compute eligible channels early to surface permission issues
@@ -2548,6 +2821,223 @@ class SetupCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to cleanup orphaned panels: {e}")
             raise
+
+    async def _start_dry_run(self, interaction: discord.Interaction) -> None:
+        """Start dry-run mode to preview changes without deploying."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+
+        # Defer response for computation
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            # Generate dry-run analysis
+            dry_run_result = await self._generate_dry_run_plan(interaction.guild)
+            
+            # Send results to user
+            await interaction.followup.send(embed=dry_run_result["embed"], ephemeral=True)
+            
+            # Send downloadable JSON if requested
+            if dry_run_result["json_data"]:
+                await interaction.followup.send(
+                    "📋 **Download detailed plan:**",
+                    file=discord.File(
+                        filename="dry_run_plan.json", 
+                        fp=json.dumps(dry_run_result["json_data"], indent=2).encode('utf-8')
+                    ),
+                    ephemeral=True
+                )
+                
+        except Exception as e:
+            logger.error(f"Dry-run failed for guild {interaction.guild.id}: {e}")
+            await interaction.followup.send(
+                f"❌ **Dry-run failed**\n\n"
+                f"An error occurred during analysis: {e}",
+                ephemeral=True
+            )
+
+    async def _generate_dry_run_plan(self, guild: discord.Guild) -> dict:
+        """Generate comprehensive dry-run plan comparing blueprint to current state."""
+        from apex_core.server_blueprint import get_apex_core_blueprint
+        
+        # Get server blueprint
+        blueprint = get_apex_core_blueprint()
+        
+        # Analyze current state
+        current_roles = {role.name: role for role in guild.roles if role.name in [
+            "Apex Staff", "Apex Client", "Apex Insider"
+        ]}
+        
+        current_categories = {cat.name: cat for cat in guild.categories if any(
+            blueprint_cat.name == cat.name for blueprint_cat in blueprint.categories
+        )}
+        
+        current_channels = {}
+        for category in guild.categories:
+            if category.name in [cat.name for cat in blueprint.categories]:
+                for channel in category.text_channels:
+                    current_channels[channel.name] = channel
+        
+        # Build diff analysis
+        roles_to_create = []
+        roles_to_modify = []
+        categories_to_create = []
+        channels_to_create = []
+        panels_to_deploy = []
+        
+        # Analyze roles
+        for role_bp in blueprint.roles:
+            if role_bp.name not in current_roles:
+                roles_to_create.append({
+                    "name": role_bp.name,
+                    "color": str(role_bp.color),
+                    "permissions": self._get_permissions_summary(role_bp.permissions),
+                    "hoist": role_bp.hoist,
+                    "mentionable": role_bp.mentionable
+                })
+            else:
+                current_role = current_roles[role_bp.name]
+                if (current_role.color != role_bp.color or 
+                    current_role.hoist != role_bp.hoist or 
+                    current_role.mentionable != role_bp.mentionable):
+                    roles_to_modify.append({
+                        "name": role_bp.name,
+                        "current_color": str(current_role.color),
+                        "new_color": str(role_bp.color),
+                        "current_hoist": current_role.hoist,
+                        "new_hoist": role_bp.hoist,
+                        "current_mentionable": current_role.mentionable,
+                        "new_mentionable": role_bp.mentionable
+                    })
+        
+        # Analyze categories and channels
+        for cat_bp in blueprint.categories:
+            if cat_bp.name not in current_categories:
+                categories_to_create.append({
+                    "name": cat_bp.name,
+                    "channels": [ch.name for ch in cat_bp.channels]
+                })
+                
+                # All channels in new category need to be created
+                for ch_bp in cat_bp.channels:
+                    channels_to_create.append({
+                        "name": ch_bp.name,
+                        "category": cat_bp.name,
+                        "topic": ch_bp.topic,
+                        "panel_type": ch_bp.panel_type
+                    })
+                    
+                    if ch_bp.panel_type:
+                        panels_to_deploy.append({
+                            "channel": ch_bp.name,
+                            "category": cat_bp.name,
+                            "panel_type": ch_bp.panel_type
+                        })
+            else:
+                # Category exists, check for missing channels
+                current_cat = current_categories[cat_bp.name]
+                existing_channels = {ch.name for ch in current_cat.text_channels}
+                
+                for ch_bp in cat_bp.channels:
+                    if ch_bp.name not in existing_channels:
+                        channels_to_create.append({
+                            "name": ch_bp.name,
+                            "category": cat_bp.name,
+                            "topic": ch_bp.topic,
+                            "panel_type": ch_bp.panel_type
+                        })
+                        
+                        if ch_bp.panel_type:
+                            panels_to_deploy.append({
+                                "channel": ch_bp.name,
+                                "category": cat_bp.name,
+                                "panel_type": ch_bp.panel_type
+                            })
+        
+        # Build summary embed
+        embed = create_embed(
+            title="🔍 Dry-Run Analysis Complete",
+            description="Preview of changes that would be made by full server setup",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="🏗️ Infrastructure Changes",
+            value=self._format_dry_run_summary(
+                len(roles_to_create), len(roles_to_modify), 
+                len(categories_to_create), len(channels_to_create)
+            ),
+            inline=False
+        )
+        
+        if panels_to_deploy:
+            panel_list = "\n".join([f"• **{p['panel_type'].title()}** → {p['channel']}" for p in panels_to_deploy[:5]])
+            if len(panels_to_deploy) > 5:
+                panel_list += f"\n... and {len(panels_to_deploy) - 5} more"
+                
+            embed.add_field(
+                name="🎛️ Panel Deployments",
+                value=panel_list or "No panels to deploy",
+                inline=False
+            )
+        
+        embed.add_field(
+            name="⚡ Dry-Run Benefits",
+            value="• Zero Discord API calls\n• No side effects\n• Safe to run anytime\n• Download detailed JSON plan",
+            inline=False
+        )
+        
+        embed.set_footer(text="Apex Core • Dry-Run Analysis")
+        embed.timestamp = datetime.now(timezone.utc)
+        
+        # Prepare JSON data for download
+        json_data = {
+            "guild_id": guild.id,
+            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "roles_to_create": len(roles_to_create),
+                "roles_to_modify": len(roles_to_modify),
+                "categories_to_create": len(categories_to_create),
+                "channels_to_create": len(channels_to_create),
+                "panels_to_deploy": len(panels_to_deploy)
+            },
+            "details": {
+                "roles_to_create": roles_to_create,
+                "roles_to_modify": roles_to_modify,
+                "categories_to_create": categories_to_create,
+                "channels_to_create": channels_to_create,
+                "panels_to_deploy": panels_to_deploy
+            }
+        }
+        
+        return {"embed": embed, "json_data": json_data}
+    
+    def _get_permissions_summary(self, permissions: discord.Permissions) -> dict:
+        """Get summary of key permissions."""
+        key_perms = [
+            'manage_channels', 'manage_messages', 'manage_roles', 'kick_members', 
+            'ban_members', 'view_audit_log', 'send_messages', 'embed_links', 
+            'attach_files', 'read_message_history'
+        ]
+        return {perm: getattr(permissions, perm, False) for perm in key_perms}
+    
+    def _format_dry_run_summary(self, roles_create: int, roles_modify: int, 
+                               categories_create: int, channels_create: int) -> str:
+        """Format dry-run summary for embed display."""
+        parts = []
+        if roles_create > 0:
+            parts.append(f"**{roles_create}** roles to create")
+        if roles_modify > 0:
+            parts.append(f"**{roles_modify}** roles to modify")
+        if categories_create > 0:
+            parts.append(f"**{categories_create}** categories to create")
+        if channels_create > 0:
+            parts.append(f"**{channels_create}** channels to create")
+        
+        return "\n".join(parts) if parts else "No infrastructure changes needed"
 
 
 class CleanupMenuSelect(discord.ui.Select["CleanupMenuView"]):
