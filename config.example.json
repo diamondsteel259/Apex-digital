@@ -189,5 +189,24 @@
     "balance": 10,
     "orders": 30,
     "invites": 30
+  },
+  "category_ids": {
+    "products": 111111111111111111,
+    "support": 222222222222222222,
+    "information": 333333333333333333,
+    "logs": 444444444444444444
+  },
+  "channel_ids": {
+    "products": 111111111111111111,
+    "support": 222222222222222222,
+    "help": 333333333333333333,
+    "announcements": 444444444444444444,
+    "audit-log": 555555555555555555,
+    "payment-log": 666666666666666666,
+    "error-log": 777777777777777777
+  },
+  "setup_settings": {
+    "session_timeout_minutes": 30,
+    "default_mode": "modern"
   }
 }

@@ -932,6 +932,6 @@ async def test_wallet_transactions_index_exists_after_migrations(db):
 
 
 @pytest.mark.asyncio
-async def test_database_schema_version_is_12(db):
-    """Test that the target schema version is 12."""
-    assert db.target_schema_version == 12
+async def test_database_schema_version_is_13(db):
+     """Test that the target schema version is 13."""
+     assert db.target_schema_version == 13
