@@ -43,14 +43,19 @@ Quick reference guide to all documentation files in the Apex Digital bot reposit
    - Development guide
    - 630+ lines
 
-2. **[RATE_LIMITING.md](RATE_LIMITING.md)** ⏱️
+2. **[docs/COMPREHENSIVE_BOT_GUIDE.md](docs/COMPREHENSIVE_BOT_GUIDE.md)** 🧭
+   - One-stop administrator + developer reference
+   - Step-by-step Ubuntu deployment and configuration walkthrough
+   - Feature usage, customization, architecture, commands, troubleshooting, and best practices
+
+3. **[RATE_LIMITING.md](RATE_LIMITING.md)** ⏱️
    - Rate limiting system guide
    - Configuration examples
    - Protected commands list
    - Best practices
    - Troubleshooting
 
-3. **[SETUP_ERROR_RECOVERY.md](SETUP_ERROR_RECOVERY.md)** 🔧
+4. **[SETUP_ERROR_RECOVERY.md](SETUP_ERROR_RECOVERY.md)** 🔧
    - Error recovery system
    - Rollback mechanisms
    - State management
