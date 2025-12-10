@@ -28,6 +28,10 @@ class RollbackInfo:
     guild_id: Optional[int] = None
     user_id: Optional[int] = None
     timestamp: datetime = None
+    # Infrastructure rollback fields
+    role_id: Optional[int] = None
+    category_id: Optional[int] = None
+    previous_overwrites: Optional[Dict[int, discord.PermissionOverwrite]] = None
     
     def __post_init__(self):
         if self.timestamp is None:
@@ -116,6 +120,7 @@ class SetupMenuSelect(discord.ui.Select["SetupMenuView"]):
             discord.SelectOption(label="Help Guide", value="help", emoji="3️⃣"),
             discord.SelectOption(label="Review System Guide", value="reviews", emoji="4️⃣"),
             discord.SelectOption(label="All of the above", value="all", emoji="5️⃣"),
+            discord.SelectOption(label="🏗️ Full server setup (roles + channels + panels)", value="full_server", emoji="🏗️"),
         ]
         super().__init__(
             placeholder="Select what to setup...",
@@ -514,6 +519,70 @@ class SetupCog(commands.Cog):
                     logger.error(f"Failed to restore previous message ID: {e}")
             else:
                 logger.info(f"Panel update rollback for panel_id {rollback_info.panel_id} - manual cleanup may be needed")
+        
+        elif rollback_info.operation_type == "role_created":
+            # Delete newly created role
+            if rollback_info.role_id and rollback_info.guild_id:
+                guild = self.bot.get_guild(rollback_info.guild_id)
+                if guild:
+                    role = guild.get_role(rollback_info.role_id)
+                    if role:
+                        try:
+                            await role.delete(reason="Apex Core setup rollback")
+                            logger.info(f"Deleted role {role.name} (ID: {role.id}) during rollback")
+                        except discord.Forbidden:
+                            logger.warning(f"No permission to delete role {role.id}")
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to delete role {role.id}: {e}")
+        
+        elif rollback_info.operation_type == "channel_created":
+            # Delete newly created channel
+            if rollback_info.channel_id and rollback_info.guild_id:
+                guild = self.bot.get_guild(rollback_info.guild_id)
+                if guild:
+                    channel = guild.get_channel(rollback_info.channel_id)
+                    if channel:
+                        try:
+                            await channel.delete(reason="Apex Core setup rollback")
+                            logger.info(f"Deleted channel {channel.name} (ID: {channel.id}) during rollback")
+                        except discord.Forbidden:
+                            logger.warning(f"No permission to delete channel {channel.id}")
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to delete channel {channel.id}: {e}")
+        
+        elif rollback_info.operation_type == "category_created":
+            # Delete newly created category
+            if rollback_info.category_id and rollback_info.guild_id:
+                guild = self.bot.get_guild(rollback_info.guild_id)
+                if guild:
+                    category = guild.get_channel(rollback_info.category_id)
+                    if isinstance(category, discord.CategoryChannel):
+                        try:
+                            await category.delete(reason="Apex Core setup rollback")
+                            logger.info(f"Deleted category {category.name} (ID: {category.id}) during rollback")
+                        except discord.Forbidden:
+                            logger.warning(f"No permission to delete category {category.id}")
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to delete category {category.id}: {e}")
+        
+        elif rollback_info.operation_type == "permissions_updated":
+            # Restore previous permission overwrites
+            if rollback_info.channel_id and rollback_info.previous_overwrites and rollback_info.guild_id:
+                guild = self.bot.get_guild(rollback_info.guild_id)
+                if guild:
+                    channel = guild.get_channel(rollback_info.channel_id)
+                    if channel:
+                        try:
+                            # Restore each overwrite
+                            for target_id, overwrite in rollback_info.previous_overwrites.items():
+                                target = guild.get_role(target_id) or guild.get_member(target_id)
+                                if target:
+                                    await channel.set_permissions(target, overwrite=overwrite, reason="Apex Core setup rollback")
+                            logger.info(f"Restored permissions for channel {channel.id} during rollback")
+                        except discord.Forbidden:
+                            logger.warning(f"No permission to restore permissions for channel {channel.id}")
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to restore permissions for channel {channel.id}: {e}")
 
     async def _log_rollback_operation(self, rollback_stack: List[RollbackInfo], reason: str) -> None:
         """Log rollback operations to audit channel."""
@@ -1013,6 +1082,479 @@ class SetupCog(commands.Cog):
 
         return embed, discord.ui.View()
 
+    async def _start_full_server_setup(self, interaction: discord.Interaction) -> None:
+        """Execute full server setup with infrastructure provisioning and panel deployment."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.", ephemeral=True
+            )
+            return
+        
+        # Defer response for long-running operation
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Create setup session
+        session_key = self._get_session_key(interaction.guild.id, interaction.user.id)
+        
+        # Check for existing session and clean it up
+        if session_key in self.setup_sessions:
+            await self._cleanup_setup_session(
+                interaction.guild.id,
+                interaction.user.id,
+                "New full server setup"
+            )
+        
+        # Create new session
+        session = SetupSession(
+            guild_id=interaction.guild.id,
+            user_id=interaction.user.id,
+            panel_types=["products", "support", "help", "reviews"],
+            current_index=0,
+            completed_panels=[],
+            rollback_stack=[],
+            eligible_channels=[],  # Will be populated after infrastructure creation
+            started_at=datetime.now(timezone.utc),
+            session_lock=asyncio.Lock(),
+        )
+        self.setup_sessions[session_key] = session
+        
+        try:
+            # Execute full server provisioning
+            await self._execute_full_server_provisioning(interaction, session)
+            
+        except SetupOperationError as e:
+            error_msg = e.format_for_user(is_slash=True)
+            await interaction.followup.send(
+                f"❌ **Full Server Setup Failed**\n\n{error_msg}",
+                ephemeral=True
+            )
+            logger.error(f"Full server setup failed for guild {interaction.guild.id}: {e}")
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ **Unexpected Error**\n\n"
+                f"An unexpected error occurred during full server setup.\n"
+                f"All changes have been rolled back.\n\n"
+                f"💡 **Suggestion:** Try again or contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Unexpected error in full server setup for guild {interaction.guild.id}: {e}", exc_info=True)
+    
+    async def _execute_full_server_provisioning(
+        self, interaction: discord.Interaction, session: SetupSession
+    ) -> None:
+        """Execute the full server provisioning with progress updates."""
+        from apex_core.server_blueprint import get_apex_core_blueprint
+        
+        guild = interaction.guild
+        if guild is None:
+            raise SetupOperationError("Guild not found", error_type="not_found")
+        
+        blueprint = get_apex_core_blueprint()
+        
+        # Track what was created vs reused
+        created_roles: List[discord.Role] = []
+        reused_roles: List[discord.Role] = []
+        created_categories: List[discord.CategoryChannel] = []
+        reused_categories: List[discord.CategoryChannel] = []
+        created_channels: List[discord.TextChannel] = []
+        reused_channels: List[discord.TextChannel] = []
+        panel_deployments: Dict[str, discord.TextChannel] = {}  # panel_type -> channel
+        
+        try:
+            # Step 1: Provision roles
+            await interaction.followup.send(
+                "🏗️ **Full Server Setup**\n\n"
+                "**Step 1/4:** Provisioning roles...",
+                ephemeral=True
+            )
+            
+            for role_bp in blueprint.roles:
+                role, is_new = await self._provision_role(guild, role_bp, session)
+                if is_new:
+                    created_roles.append(role)
+                else:
+                    reused_roles.append(role)
+            
+            # Step 2: Provision categories and channels
+            await interaction.edit_original_response(
+                content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
+                        f"**Step 2/4:** Provisioning categories and channels..."
+            )
+            
+            # Build role mapping for permission overwrites
+            role_map = self._build_role_map(guild)
+            
+            for category_bp in blueprint.categories:
+                category, is_new_cat = await self._provision_category(
+                    guild, category_bp, role_map, session
+                )
+                if is_new_cat:
+                    created_categories.append(category)
+                else:
+                    reused_categories.append(category)
+                
+                # Provision channels in this category
+                for channel_bp in category_bp.channels:
+                    channel, is_new_chan = await self._provision_channel(
+                        guild, category, channel_bp, role_map, session
+                    )
+                    if is_new_chan:
+                        created_channels.append(channel)
+                    else:
+                        reused_channels.append(channel)
+                    
+                    # Track channels that need panel deployment
+                    if channel_bp.panel_type:
+                        panel_deployments[channel_bp.panel_type] = channel
+            
+            # Step 3: Deploy panels
+            await interaction.edit_original_response(
+                content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
+                        f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
+                        f"{len(created_channels)} channels\n"
+                        f"**Step 3/4:** Deploying panels..."
+            )
+            
+            # Update session eligible channels
+            session.eligible_channels = await self._precompute_eligible_channels(guild)
+            
+            # Deploy each panel
+            deployed_panels = []
+            for panel_type, channel in panel_deployments.items():
+                try:
+                    success = await self._deploy_panel(
+                        panel_type, channel, guild, interaction.user.id
+                    )
+                    if success:
+                        deployed_panels.append(f"{self._get_panel_emoji(panel_type)} {panel_type.title()}")
+                except Exception as e:
+                    logger.error(f"Failed to deploy {panel_type} panel: {e}")
+            
+            # Step 4: Generate audit log
+            await interaction.edit_original_response(
+                content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
+                        f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
+                        f"{len(created_channels)} channels\n"
+                        f"**Step 3/4:** ✅ Deployed {len(deployed_panels)} panels\n"
+                        f"**Step 4/4:** Generating audit log..."
+            )
+            
+            # Log comprehensive audit
+            await self._log_full_server_setup_audit(
+                guild, interaction.user,
+                created_roles, reused_roles,
+                created_categories, reused_categories,
+                created_channels, reused_channels,
+                deployed_panels
+            )
+            
+            # Success message with detailed summary
+            summary_parts = []
+            
+            if created_roles:
+                summary_parts.append(f"**Roles Created:** {', '.join(r.mention for r in created_roles)}")
+            if reused_roles:
+                summary_parts.append(f"**Roles Reused:** {', '.join(r.mention for r in reused_roles)}")
+            
+            if created_categories:
+                summary_parts.append(f"**Categories Created:** {', '.join(c.name for c in created_categories)}")
+            if reused_categories:
+                summary_parts.append(f"**Categories Reused:** {', '.join(c.name for c in reused_categories)}")
+            
+            if created_channels:
+                summary_parts.append(f"**Channels Created:** {', '.join(c.mention for c in created_channels)}")
+            if reused_channels:
+                summary_parts.append(f"**Channels Reused:** {', '.join(c.mention for c in reused_channels)}")
+            
+            if deployed_panels:
+                summary_parts.append(f"**Panels Deployed:** {', '.join(deployed_panels)}")
+            
+            await interaction.edit_original_response(
+                content=f"✅ **Full Server Setup Complete!**\n\n" + "\n\n".join(summary_parts) + 
+                        f"\n\n🎉 Your Apex Core server is ready to use!"
+            )
+            
+            # Clean up session
+            await self._cleanup_setup_session(
+                session.guild_id,
+                session.user_id,
+                "Full server setup completed"
+            )
+            
+        except Exception as e:
+            # Rollback all changes
+            logger.error(f"Full server setup failed, rolling back: {e}")
+            await self._execute_rollback_stack(session.rollback_stack, f"Full server setup failed: {e}")
+            raise
+    
+    async def _provision_role(
+        self, guild: discord.Guild, role_bp, session: SetupSession
+    ) -> tuple[discord.Role, bool]:
+        """Provision a role, returning (role, is_new)."""
+        # Check if role already exists
+        existing_role = discord.utils.get(guild.roles, name=role_bp.name)
+        
+        if existing_role:
+            logger.info(f"Role '{role_bp.name}' already exists, reusing")
+            return existing_role, False
+        
+        # Create new role
+        try:
+            role = await guild.create_role(
+                name=role_bp.name,
+                permissions=role_bp.permissions,
+                color=role_bp.color,
+                hoist=role_bp.hoist,
+                mentionable=role_bp.mentionable,
+                reason=role_bp.reason
+            )
+            
+            # Add to rollback stack
+            rollback = RollbackInfo(
+                operation_type="role_created",
+                panel_type="infrastructure",
+                role_id=role.id,
+                guild_id=guild.id,
+                user_id=session.user_id
+            )
+            session.rollback_stack.append(rollback)
+            
+            logger.info(f"Created role '{role_bp.name}' (ID: {role.id})")
+            return role, True
+            
+        except discord.Forbidden:
+            raise SetupOperationError(
+                f"Bot lacks permission to create role '{role_bp.name}'",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Manage Roles' permission and ensure bot role is above target roles"
+            )
+        except discord.HTTPException as e:
+            raise SetupOperationError(
+                f"Failed to create role '{role_bp.name}': {e}",
+                error_type="unknown",
+                actionable_suggestion="Check Discord API status or try again later"
+            )
+    
+    async def _provision_category(
+        self, guild: discord.Guild, category_bp, role_map: Dict[str, discord.Role],
+        session: SetupSession
+    ) -> tuple[discord.CategoryChannel, bool]:
+        """Provision a category, returning (category, is_new)."""
+        # Check if category already exists
+        existing_category = discord.utils.get(guild.categories, name=category_bp.name)
+        
+        if existing_category:
+            logger.info(f"Category '{category_bp.name}' already exists, reusing")
+            return existing_category, False
+        
+        # Build permission overwrites
+        overwrites = self._build_overwrites(category_bp.overwrites, role_map, guild)
+        
+        # Create new category
+        try:
+            category = await guild.create_category(
+                name=category_bp.name,
+                overwrites=overwrites,
+                reason=category_bp.reason
+            )
+            
+            # Add to rollback stack
+            rollback = RollbackInfo(
+                operation_type="category_created",
+                panel_type="infrastructure",
+                category_id=category.id,
+                guild_id=guild.id,
+                user_id=session.user_id
+            )
+            session.rollback_stack.append(rollback)
+            
+            logger.info(f"Created category '{category_bp.name}' (ID: {category.id})")
+            return category, True
+            
+        except discord.Forbidden:
+            raise SetupOperationError(
+                f"Bot lacks permission to create category '{category_bp.name}'",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Manage Channels' permission"
+            )
+        except discord.HTTPException as e:
+            raise SetupOperationError(
+                f"Failed to create category '{category_bp.name}': {e}",
+                error_type="unknown",
+                actionable_suggestion="Check Discord API status or try again later"
+            )
+    
+    async def _provision_channel(
+        self, guild: discord.Guild, category: discord.CategoryChannel,
+        channel_bp, role_map: Dict[str, discord.Role], session: SetupSession
+    ) -> tuple[discord.TextChannel, bool]:
+        """Provision a channel, returning (channel, is_new)."""
+        # Check if channel already exists in this category
+        existing_channel = discord.utils.get(category.channels, name=channel_bp.name)
+        
+        if existing_channel and isinstance(existing_channel, discord.TextChannel):
+            logger.info(f"Channel '{channel_bp.name}' already exists in '{category.name}', reusing")
+            return existing_channel, False
+        
+        # Build permission overwrites
+        overwrites = self._build_overwrites(channel_bp.overwrites, role_map, guild)
+        
+        # Create new channel
+        try:
+            if channel_bp.channel_type == "text":
+                channel = await guild.create_text_channel(
+                    name=channel_bp.name,
+                    category=category,
+                    topic=channel_bp.topic,
+                    overwrites=overwrites,
+                    reason=channel_bp.reason
+                )
+            else:  # voice
+                channel = await guild.create_voice_channel(
+                    name=channel_bp.name,
+                    category=category,
+                    overwrites=overwrites,
+                    reason=channel_bp.reason
+                )
+            
+            # Add to rollback stack
+            rollback = RollbackInfo(
+                operation_type="channel_created",
+                panel_type="infrastructure",
+                channel_id=channel.id,
+                guild_id=guild.id,
+                user_id=session.user_id
+            )
+            session.rollback_stack.append(rollback)
+            
+            logger.info(f"Created channel '{channel_bp.name}' (ID: {channel.id}) in '{category.name}'")
+            return channel, True
+            
+        except discord.Forbidden:
+            raise SetupOperationError(
+                f"Bot lacks permission to create channel '{channel_bp.name}'",
+                error_type="permission",
+                actionable_suggestion="Grant the bot 'Manage Channels' permission"
+            )
+        except discord.HTTPException as e:
+            raise SetupOperationError(
+                f"Failed to create channel '{channel_bp.name}': {e}",
+                error_type="unknown",
+                actionable_suggestion="Check Discord API status or try again later"
+            )
+    
+    def _build_role_map(self, guild: discord.Guild) -> Dict[str, discord.Role]:
+        """Build a mapping of role names to role objects."""
+        role_map = {"@everyone": guild.default_role}
+        for role in guild.roles:
+            role_map[role.name] = role
+        return role_map
+    
+    def _build_overwrites(
+        self, overwrite_specs: Dict[str, Dict[str, bool]],
+        role_map: Dict[str, discord.Role], guild: discord.Guild
+    ) -> Dict[discord.Role, discord.PermissionOverwrite]:
+        """Build permission overwrites from blueprint specification."""
+        overwrites = {}
+        
+        for role_name, perms in overwrite_specs.items():
+            role = role_map.get(role_name)
+            if not role:
+                logger.warning(f"Role '{role_name}' not found in guild, skipping overwrite")
+                continue
+            
+            overwrite = discord.PermissionOverwrite()
+            for perm_name, value in perms.items():
+                setattr(overwrite, perm_name, value)
+            
+            overwrites[role] = overwrite
+        
+        return overwrites
+    
+    async def _log_full_server_setup_audit(
+        self, guild: discord.Guild, admin: discord.Member | discord.User,
+        created_roles: List[discord.Role], reused_roles: List[discord.Role],
+        created_categories: List[discord.CategoryChannel], reused_categories: List[discord.CategoryChannel],
+        created_channels: List[discord.TextChannel], reused_channels: List[discord.TextChannel],
+        deployed_panels: List[str]
+    ) -> None:
+        """Log comprehensive audit for full server setup."""
+        try:
+            audit_channel_id = self.bot.config.logging_channels.audit
+            if not audit_channel_id:
+                return
+            
+            audit_channel = guild.get_channel(audit_channel_id)
+            if not isinstance(audit_channel, discord.TextChannel):
+                return
+            
+            embed = create_embed(
+                title="🏗️ Full Server Setup Completed",
+                description=f"**Administrator:** {admin.mention}\n**Timestamp:** <t:{int(datetime.now(timezone.utc).timestamp())}:F>",
+                color=discord.Color.green(),
+            )
+            
+            # Roles summary
+            role_summary = []
+            if created_roles:
+                role_summary.append(f"**Created ({len(created_roles)}):** {', '.join(r.mention for r in created_roles)}")
+            if reused_roles:
+                role_summary.append(f"**Reused ({len(reused_roles)}):** {', '.join(r.mention for r in reused_roles)}")
+            
+            if role_summary:
+                embed.add_field(
+                    name="🎭 Roles",
+                    value="\n".join(role_summary),
+                    inline=False
+                )
+            
+            # Categories summary
+            cat_summary = []
+            if created_categories:
+                cat_summary.append(f"**Created ({len(created_categories)}):** {', '.join(c.name for c in created_categories)}")
+            if reused_categories:
+                cat_summary.append(f"**Reused ({len(reused_categories)}):** {', '.join(c.name for c in reused_categories)}")
+            
+            if cat_summary:
+                embed.add_field(
+                    name="📁 Categories",
+                    value="\n".join(cat_summary),
+                    inline=False
+                )
+            
+            # Channels summary
+            chan_summary = []
+            if created_channels:
+                chan_summary.append(f"**Created ({len(created_channels)}):** {', '.join(c.mention for c in created_channels[:10])}")
+                if len(created_channels) > 10:
+                    chan_summary.append(f"... and {len(created_channels) - 10} more")
+            if reused_channels:
+                chan_summary.append(f"**Reused ({len(reused_channels)}):** {len(reused_channels)} channels")
+            
+            if chan_summary:
+                embed.add_field(
+                    name="💬 Channels",
+                    value="\n".join(chan_summary),
+                    inline=False
+                )
+            
+            # Panels summary
+            if deployed_panels:
+                embed.add_field(
+                    name="📋 Panels Deployed",
+                    value="\n".join(f"• {panel}" for panel in deployed_panels),
+                    inline=False
+                )
+            
+            embed.set_footer(text="Apex Core • Full Server Setup")
+            await audit_channel.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Failed to log full server setup audit: {e}")
+
     async def _handle_setup_selection(
         self, interaction: discord.Interaction, selection: str
     ) -> None:
@@ -1021,6 +1563,11 @@ class SetupCog(commands.Cog):
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
+            return
+
+        # Handle full server setup differently
+        if selection == "full_server":
+            await self._start_full_server_setup(interaction)
             return
 
         # Pre-compute eligible channels early to surface permission issues
