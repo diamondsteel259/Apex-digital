@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -2736,3 +2737,35 @@ class Database:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Context manager for atomic database transactions.
+        
+        Provides rollback on exception and ensures all operations within the context
+        are committed atomically. Any exceptions will cause automatic rollback.
+        
+        Yields:
+            The transaction context
+            
+        Example:
+            async with self.db.transaction() as tx:
+                await tx.execute("INSERT INTO ...")
+                await tx.execute("UPDATE ...")
+                # Auto-commit on successful exit
+                # Auto-rollback on exception
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+
+        try:
+            await self._connection.execute("BEGIN TRANSACTION")
+            yield self._connection
+            await self._connection.execute("COMMIT")
+        except Exception as e:
+            try:
+                await self._connection.execute("ROLLBACK")
+                logger.debug(f"Database transaction rolled back due to: {e}")
+            except Exception as rollback_error:
+                logger.error(f"Failed to rollback transaction: {rollback_error}")
+            raise
