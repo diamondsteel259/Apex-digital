@@ -23,6 +23,7 @@ class RollbackInfo:
     panel_type: str
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
+    previous_message_id: Optional[int] = None
     panel_id: Optional[int] = None
     guild_id: Optional[int] = None
     user_id: Optional[int] = None
@@ -31,6 +32,29 @@ class RollbackInfo:
     def __post_init__(self):
         if self.timestamp is None:
             self.timestamp = datetime.now(timezone.utc)
+
+
+@dataclass
+class SetupSession:
+    """Session state for setup wizard with concurrent guild support."""
+    guild_id: int
+    user_id: int
+    panel_types: list[str]
+    current_index: int
+    completed_panels: list[str]
+    rollback_stack: list[RollbackInfo]
+    eligible_channels: list[discord.TextChannel]
+    started_at: Optional[datetime] = None
+    timestamp: Optional[datetime] = None
+    session_lock: asyncio.Lock = None
+    
+    def __post_init__(self):
+        if self.started_at is None:
+            self.started_at = datetime.now(timezone.utc)
+        if self.timestamp is None:
+            self.timestamp = datetime.now(timezone.utc)
+        if self.session_lock is None:
+            self.session_lock = asyncio.Lock()
 
 
 @dataclass
@@ -92,6 +116,17 @@ class SetupMenuView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=300)
         self.add_item(SetupMenuSelect())
+    
+    async def on_timeout(self) -> None:
+        """Handle view timeout by notifying the original invoker."""
+        try:
+            if hasattr(self, 'original_interaction') and self.original_interaction:
+                await self.original_interaction.followup.send(
+                    "⏰ Setup menu timed out. Please run the setup command again.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Failed to send timeout message: {e}")
 
 
 class ContinueSetupButton(discord.ui.Button):
@@ -124,6 +159,17 @@ class ContinueSetupView(discord.ui.View):
     def __init__(self, panel_type: str, user_id: int) -> None:
         super().__init__(timeout=300)
         self.add_item(ContinueSetupButton(panel_type, user_id))
+    
+    async def on_timeout(self) -> None:
+        """Handle view timeout by notifying the original invoker."""
+        try:
+            if hasattr(self, 'original_interaction') and self.original_interaction:
+                await self.original_interaction.followup.send(
+                    "⏰ Setup timed out. Please run the setup command again.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Failed to send timeout message: {e}")
 
 
 class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
@@ -136,9 +182,10 @@ class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
         max_length=100,
     )
 
-    def __init__(self, panel_type: str) -> None:
+    def __init__(self, panel_type: str, session: Optional[SetupSession] = None) -> None:
         super().__init__()
         self.panel_type = panel_type
+        self.session = session
         # Update title to show which panel we're setting up
         self.title = f"Deploy {panel_type.title()} Panel"
 
@@ -149,7 +196,7 @@ class ChannelInputModal(discord.ui.Modal, title="Channel Selection"):
             await interaction.followup.send("Setup cog not loaded.", ephemeral=True)
             return
 
-        await cog._process_channel_input(interaction, self.channel_input.value, self.panel_type)
+        await cog._process_channel_input(interaction, self.channel_input.value, self.panel_type, self.session)
 
 
 class PanelTypeModal(discord.ui.Modal, title="Select Panel Type"):
@@ -178,6 +225,17 @@ class DeploymentSelectView(discord.ui.View):
     def __init__(self, interaction_user_id: int) -> None:
         super().__init__(timeout=300)
         self.interaction_user_id = interaction_user_id
+    
+    async def on_timeout(self) -> None:
+        """Handle view timeout by notifying the original invoker."""
+        try:
+            if hasattr(self, 'original_interaction') and self.original_interaction:
+                await self.original_interaction.followup.send(
+                    "⏰ Deployment menu timed out. Please try again.",
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Failed to send timeout message: {e}")
 
     @discord.ui.button(label="Deploy New", style=discord.ButtonStyle.primary, emoji="🚀")
     async def deploy_new(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -230,8 +288,10 @@ class DeploymentSelectView(discord.ui.View):
 class SetupCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # Use (guild_id, user_id) tuple as key to allow concurrent setups in different guilds
+        self.setup_sessions: dict[tuple[int, int], SetupSession] = {}
+        # Keep legacy states for backward compatibility during migration
         self.user_states: dict[int, WizardState] = {}
-        self._rollback_lock = asyncio.Lock()
         # Clean up expired states every 5 minutes
         self.bot.loop.create_task(self._cleanup_expired_states())
 
@@ -242,29 +302,28 @@ class SetupCog(commands.Cog):
         return any(role.id == admin_role_id for role in getattr(member, "roles", []))
 
     @asynccontextmanager
-    async def _atomic_operation(self, operation_name: str):
-        """Context manager for atomic operations with automatic rollback."""
-        rollback_stack: List[RollbackInfo] = []
+    async def _atomic_operation(self, session: SetupSession, operation_name: str):
+        """Context manager for atomic operations with automatic rollback using session lock."""
         try:
-            yield rollback_stack
+            async with session.session_lock:
+                yield session.rollback_stack
         except Exception as e:
             logger.error(f"Atomic operation '{operation_name}' failed: {e}")
-            await self._execute_rollback_stack(rollback_stack, f"Failed operation: {operation_name}")
+            await self._execute_rollback_stack(session, f"Failed operation: {operation_name}")
             raise
 
     async def _execute_rollback_stack(self, rollback_stack: List[RollbackInfo], reason: str) -> None:
         """Execute a stack of rollback operations."""
-        async with self._rollback_lock:
-            for rollback_info in reversed(rollback_stack):
-                try:
-                    await self._rollback_single_operation(rollback_info)
-                    logger.info(f"Rolled back {rollback_info.operation_type} for {rollback_info.panel_type}")
-                except Exception as e:
-                    logger.error(f"Failed to rollback {rollback_info.operation_type}: {e}")
-            
-            # Log the rollback operation
-            if rollback_stack:
-                await self._log_rollback_operation(rollback_stack, reason)
+        for rollback_info in reversed(rollback_stack):
+            try:
+                await self._rollback_single_operation(rollback_info)
+                logger.info(f"Rolled back {rollback_info.operation_type} for {rollback_info.panel_type}")
+            except Exception as e:
+                logger.error(f"Failed to rollback {rollback_info.operation_type}: {e}")
+        
+        # Log the rollback operation
+        if rollback_stack:
+            await self._log_rollback_operation(rollback_stack, reason)
 
     async def _rollback_single_operation(self, rollback_info: RollbackInfo) -> None:
         """Rollback a single operation based on its type."""
@@ -285,9 +344,15 @@ class SetupCog(commands.Cog):
                 await self.bot.db.remove_panel(rollback_info.panel_id)
 
         elif rollback_info.operation_type == "panel_updated":
-            # For updated panels, we can't easily rollback to the old message ID
-            # So we just log that this happened
-            logger.info(f"Panel update rollback for panel_id {rollback_info.panel_id} - manual cleanup may be needed")
+            # For panel updates, restore the previous message ID if available
+            if rollback_info.panel_id and rollback_info.previous_message_id:
+                try:
+                    await self.bot.db.update_panel(rollback_info.panel_id, rollback_info.previous_message_id)
+                    logger.info(f"Restored previous message ID {rollback_info.previous_message_id} for panel {rollback_info.panel_id}")
+                except Exception as e:
+                    logger.error(f"Failed to restore previous message ID: {e}")
+            else:
+                logger.info(f"Panel update rollback for panel_id {rollback_info.panel_id} - manual cleanup may be needed")
 
     async def _log_rollback_operation(self, rollback_stack: List[RollbackInfo], reason: str) -> None:
         """Log rollback operations to audit channel."""
@@ -351,39 +416,226 @@ class SetupCog(commands.Cog):
         except Exception as e:
             raise SetupOperationError(f"Database connection failed: {e}")
 
+    async def _precompute_eligible_channels(self, guild: discord.Guild) -> list[discord.TextChannel]:
+        """Pre-compute eligible channels at setup start to surface permission issues early.
+        
+        Args:
+            guild: The Discord guild to check channels for
+            
+        Returns:
+            List of eligible text channels with required permissions
+            
+        Raises:
+            SetupOperationError: If bot lacks required permissions for the guild
+        """
+        if not guild.me.guild_permissions.manage_channels:
+            raise SetupOperationError("Bot needs 'Manage Channels' permission to setup panels")
+
+        eligible_channels = []
+        for channel in guild.text_channels:
+            if (channel.permissions_for(guild.me).send_messages and 
+                channel.permissions_for(guild.me).embed_links):
+                eligible_channels.append(channel)
+        
+        if not eligible_channels:
+            raise SetupOperationError(
+                "No eligible channels found. Bot needs 'Send Messages' and 'Embed Links' "
+                "permissions in at least one text channel."
+            )
+        
+        return eligible_channels
+
+    def _get_session_key(self, guild_id: int, user_id: int) -> tuple[int, int]:
+        """Get the session key for a guild and user combination."""
+        return (guild_id, user_id)
+
+    async def _cleanup_wizard_state(self, user_id: int, reason: str) -> None:
+        """Clean up wizard state and rollback any incomplete operations."""
+        # Handle legacy user states
+        if user_id in self.user_states:
+            state = self.user_states[user_id]
+            
+            # Rollback any incomplete operations
+            if hasattr(state, 'rollback_stack') and state.rollback_stack:
+                await self._execute_rollback_stack(state.rollback_stack, f"Wizard cleanup: {reason}")
+            
+            # Remove state
+            del self.user_states[user_id]
+            logger.info(f"Cleaned up wizard state for user {user_id}: {reason}")
+
+    async def _cleanup_setup_session(self, guild_id: int, user_id: int, reason: str) -> None:
+        """Clean up setup session and rollback any incomplete operations."""
+        session_key = self._get_session_key(guild_id, user_id)
+        
+        if session_key in self.setup_sessions:
+            session = self.setup_sessions[session_key]
+            
+            # Rollback any incomplete operations
+            if session.rollback_stack:
+                await self._execute_rollback_stack(session.rollback_stack, f"Session cleanup: {reason}")
+            
+            # Remove session
+            del self.setup_sessions[session_key]
+            logger.info(f"Cleaned up setup session for guild {guild_id}, user {user_id}: {reason}")
+
     async def _cleanup_expired_states(self) -> None:
-        """Clean up expired wizard states."""
+        """Clean up expired wizard states and setup sessions."""
         while True:
             try:
                 await asyncio.sleep(300)  # Check every 5 minutes
                 current_time = datetime.now(timezone.utc)
                 expired_users = []
+                expired_sessions = []
 
+                # Check legacy user states
                 for user_id, state in self.user_states.items():
                     # Expire after 30 minutes of inactivity
-                    if (current_time - state.started_at).total_seconds() > 1800:
+                    if hasattr(state, 'started_at') and (current_time - state.started_at).total_seconds() > 1800:
                         expired_users.append(user_id)
 
+                # Check new setup sessions
+                for (guild_id, user_id), session in self.setup_sessions.items():
+                    # Expire after 30 minutes of inactivity
+                    if (current_time - session.started_at).total_seconds() > 1800:
+                        expired_sessions.append((guild_id, user_id))
+
+                # Clean up expired states
                 for user_id in expired_users:
                     await self._cleanup_wizard_state(user_id, "Session expired")
+
+                for guild_id, user_id in expired_sessions:
+                    await self._cleanup_setup_session(guild_id, user_id, "Session expired")
 
             except Exception as e:
                 logger.error(f"Error in cleanup task: {e}")
 
-    async def _cleanup_wizard_state(self, user_id: int, reason: str) -> None:
-        """Clean up wizard state and rollback any incomplete operations."""
-        if user_id not in self.user_states:
-            return
+    async def _cleanup_expired_states_manual(self) -> int:
+        """Manually clean up expired wizard states and return count."""
+        current_time = datetime.now(timezone.utc)
+        expired_users = []
 
-        state = self.user_states[user_id]
+        for user_id, state in self.user_states.items():
+            # Expire after 30 minutes of inactivity
+            if hasattr(state, 'started_at') and (current_time - state.started_at).total_seconds() > 1800:
+                expired_users.append(user_id)
+
+        for user_id in expired_users:
+            await self._cleanup_wizard_state(user_id, "Manual expired cleanup")
+
+        return len(expired_users)
+
+    async def _deploy_panel(self, panel_type: str, channel: discord.TextChannel, 
+                          guild: discord.Guild, user_id: int) -> bool:
+        """Deploy a panel with atomic transaction support."""
         
-        # Rollback any incomplete operations
-        if state.rollback_stack:
-            await self._execute_rollback_stack(state.rollback_stack, f"Wizard cleanup: {reason}")
+        # Find existing session for this guild and user
+        session_key = self._get_session_key(guild.id, user_id)
+        session = self.setup_sessions.get(session_key)
         
-        # Remove state
-        del self.user_states[user_id]
-        logger.info(f"Cleaned up wizard state for user {user_id}: {reason}")
+        if not session:
+            logger.error(f"No setup session found for guild {guild.id}, user {user_id}")
+            return False
+
+        try:
+            # Get the panel embed and view
+            if panel_type == "products":
+                embed, view = await self._create_product_panel()
+            elif panel_type == "support":
+                embed, view = await self._create_support_panel()
+            elif panel_type == "help":
+                embed, view = await self._create_help_panel()
+            elif panel_type == "reviews":
+                embed, view = await self._create_reviews_panel()
+            else:
+                raise SetupOperationError(f"Unknown panel type: {panel_type}")
+
+            # Check if this is an update to an existing panel
+            existing_panel = await self.bot.db.find_panel(panel_type, guild.id)
+            previous_message_id = existing_panel["message_id"] if existing_panel else None
+            
+            # Store sent messages for rollback cleanup
+            sent_messages: list[tuple[int, int]] = []  # (channel_id, message_id)
+
+            async with self.bot.db.transaction() as tx:
+                # Send the panel message
+                message = await channel.send(embed=embed, view=view)
+                sent_messages.append((channel.id, message.id))
+                
+                # Create rollback info for message
+                message_rollback = RollbackInfo(
+                    operation_type="message_sent",
+                    panel_type=panel_type,
+                    channel_id=channel.id,
+                    message_id=message.id,
+                    guild_id=guild.id,
+                    user_id=user_id
+                )
+                session.rollback_stack.append(message_rollback)
+
+                if existing_panel:
+                    # Update existing panel
+                    await tx.execute(
+                        """
+                        UPDATE permanent_messages 
+                        SET message_id = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (message.id, existing_panel["id"])
+                    )
+                    
+                    # Add rollback info for panel update
+                    update_rollback = RollbackInfo(
+                        operation_type="panel_updated",
+                        panel_type=panel_type,
+                        panel_id=existing_panel["id"],
+                        previous_message_id=previous_message_id,
+                        guild_id=guild.id,
+                        user_id=user_id
+                    )
+                    session.rollback_stack.append(update_rollback)
+                else:
+                    # Create new panel record
+                    panel_id = await tx.execute_insert(
+                        """
+                        INSERT INTO permanent_messages 
+                        (type, message_id, channel_id, guild_id, title, description, created_by_staff_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (panel_type, message.id, channel.id, guild.id, embed.title, embed.description, user_id)
+                    )
+                    
+                    # Add rollback info for panel creation
+                    create_rollback = RollbackInfo(
+                        operation_type="panel_created",
+                        panel_type=panel_type,
+                        panel_id=panel_id,
+                        guild_id=guild.id,
+                        user_id=user_id
+                    )
+                    session.rollback_stack.append(create_rollback)
+
+            # Log successful deployment
+            await self._log_audit(
+                guild,
+                f"Panel Deployed: {panel_type}",
+                f"**Channel:** {channel.mention}\n**Message ID:** {message.id}"
+            )
+
+            return True
+
+        except Exception as e:
+            # Clean up any sent messages if transaction failed
+            for channel_id, message_id in sent_messages:
+                try:
+                    channel = self.bot.get_channel(channel_id)
+                    if isinstance(channel, discord.TextChannel):
+                        message = await channel.fetch_message(message_id)
+                        await message.delete()
+                except (discord.NotFound, discord.Forbidden, AttributeError):
+                    pass
+            
+            logger.error(f"Failed to deploy {panel_type} panel: {e}")
+            return False
 
     async def _log_audit(self, guild: discord.Guild, action: str, details: str) -> None:
         """Log setup actions to audit channel."""
@@ -574,140 +826,195 @@ class SetupCog(commands.Cog):
 
         return embed, discord.ui.View()
 
-    async def _deploy_panel(
-        self,
-        panel_type: str,
-        channel: discord.TextChannel,
-        guild: discord.Guild,
-        user_id: int,
-    ) -> bool:
-        """Deploy a panel to a channel with comprehensive error recovery."""
-        async with self._atomic_operation(f"deploy_panel_{panel_type}") as rollback_stack:
-            try:
-                # Validate prerequisites first
-                await self._validate_operation_prerequisites(guild, channel)
-                
-                # Step 1: Create embed and view
-                if panel_type == "products":
-                    embed, view = await self._create_product_panel()
-                    title = "Apex Core: Products"
-                elif panel_type == "support":
-                    embed, view = await self._create_support_panel()
-                    title = "Support Options"
-                elif panel_type == "help":
-                    embed, view = await self._create_help_panel()
-                    title = "How to Use Apex Core"
-                elif panel_type == "reviews":
-                    embed, view = await self._create_reviews_panel()
-                    title = "Share Your Experience"
-                else:
-                    raise SetupOperationError(f"Unknown panel type: {panel_type}")
+    async def _deploy_panel(self, panel_type: str, channel: discord.TextChannel, 
+                          guild: discord.Guild, user_id: int) -> bool:
+        """Deploy a panel with atomic transaction support."""
+        
+        # Find existing session for this guild and user
+        session_key = self._get_session_key(guild.id, user_id)
+        session = self.setup_sessions.get(session_key)
+        
+        if not session:
+            logger.error(f"No setup session found for guild {guild.id}, user {user_id}")
+            return False
 
-                # Step 2: Send message (track for rollback)
+        try:
+            # Get the panel embed and view
+            if panel_type == "products":
+                embed, view = await self._create_product_panel()
+            elif panel_type == "support":
+                embed, view = await self._create_support_panel()
+            elif panel_type == "help":
+                embed, view = await self._create_help_panel()
+            elif panel_type == "reviews":
+                embed, view = await self._create_reviews_panel()
+            else:
+                raise SetupOperationError(f"Unknown panel type: {panel_type}")
+
+            # Check if this is an update to an existing panel
+            existing_panel = await self.bot.db.find_panel(panel_type, guild.id)
+            previous_message_id = existing_panel["message_id"] if existing_panel else None
+            
+            # Store sent messages for rollback cleanup
+            sent_messages: list[tuple[int, int]] = []  # (channel_id, message_id)
+
+            async with self.bot.db.transaction() as tx:
+                # Send the panel message
                 message = await channel.send(embed=embed, view=view)
-                rollback_info = RollbackInfo(
+                sent_messages.append((channel.id, message.id))
+                
+                # Create rollback info for message
+                message_rollback = RollbackInfo(
                     operation_type="message_sent",
                     panel_type=panel_type,
                     channel_id=channel.id,
                     message_id=message.id,
                     guild_id=guild.id,
-                    user_id=user_id,
+                    user_id=user_id
                 )
-                rollback_stack.append(rollback_info)
+                session.rollback_stack.append(message_rollback)
 
-                # Step 3: Database operations
-                existing = await self.bot.db.get_panel_by_type_and_channel(
-                    panel_type, channel.id, guild.id
-                )
-
-                if existing:
+                if existing_panel:
                     # Update existing panel
-                    await self.bot.db.update_panel(existing["id"], message.id)
-                    rollback_info_update = RollbackInfo(
+                    await tx.execute(
+                        """
+                        UPDATE permanent_messages 
+                        SET message_id = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (message.id, existing_panel["id"])
+                    )
+                    
+                    # Add rollback info for panel update
+                    update_rollback = RollbackInfo(
                         operation_type="panel_updated",
                         panel_type=panel_type,
-                        panel_id=existing["id"],
+                        panel_id=existing_panel["id"],
+                        previous_message_id=previous_message_id,
                         guild_id=guild.id,
-                        user_id=user_id,
+                        user_id=user_id
                     )
-                    rollback_stack.append(rollback_info_update)
+                    session.rollback_stack.append(update_rollback)
                 else:
-                    # Create new panel
-                    panel_id = await self.bot.db.deploy_panel(
-                        panel_type=panel_type,
-                        message_id=message.id,
-                        channel_id=channel.id,
-                        guild_id=guild.id,
-                        title=title,
-                        description=embed.description or "",
-                        created_by_staff_id=user_id,
+                    # Create new panel record
+                    panel_id = await tx.execute_insert(
+                        """
+                        INSERT INTO permanent_messages 
+                        (type, message_id, channel_id, guild_id, title, description, created_by_staff_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (panel_type, message.id, channel.id, guild.id, embed.title, embed.description, user_id)
                     )
-                    rollback_info_create = RollbackInfo(
+                    
+                    # Add rollback info for panel creation
+                    create_rollback = RollbackInfo(
                         operation_type="panel_created",
                         panel_type=panel_type,
                         panel_id=panel_id,
                         guild_id=guild.id,
-                        user_id=user_id,
+                        user_id=user_id
                     )
-                    rollback_stack.append(rollback_info_create)
+                    session.rollback_stack.append(create_rollback)
 
-                # Step 4: Log successful deployment
-                await self._log_audit(
-                    guild,
-                    f"Panel Deployed",
-                    f"**Type:** {panel_type}\n**Channel:** {channel.mention}\n**Message:** {message.id}",
-                )
+            # Log successful deployment
+            await self._log_audit(
+                guild,
+                f"Panel Deployed: {panel_type}",
+                f"**Channel:** {channel.mention}\n**Message ID:** {message.id}"
+            )
 
-                # Clear rollback stack since operation succeeded
-                rollback_stack.clear()
-                return True
+            return True
 
-            except SetupOperationError:
-                # Re-raise setup operations errors (already have rollback info)
-                raise
-            except Exception as e:
-                # Wrap other exceptions in SetupOperationError
-                raise SetupOperationError(f"Failed to deploy {panel_type} panel: {e}")
-
-        return False  # This should not be reached due to exception handling
+        except Exception as e:
+            # Clean up any sent messages if transaction failed
+            for channel_id, message_id in sent_messages:
+                try:
+                    channel = self.bot.get_channel(channel_id)
+                    if isinstance(channel, discord.TextChannel):
+                        message = await channel.fetch_message(message_id)
+                        await message.delete()
+                except (discord.NotFound, discord.Forbidden, AttributeError):
+                    pass
+            
+            logger.error(f"Failed to deploy {panel_type} panel: {e}")
+            return False
 
     async def _handle_setup_selection(
         self, interaction: discord.Interaction, selection: str
     ) -> None:
-        """Handle the initial setup menu selection with error recovery."""
+        """Handle setup menu selection and create setup session."""
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
             return
 
+        # Pre-compute eligible channels early to surface permission issues
+        try:
+            eligible_channels = await self._precompute_eligible_channels(interaction.guild)
+        except SetupOperationError as e:
+            await interaction.response.send_message(f"❌ {str(e)}", ephemeral=True)
+            return
+
+        # Create panel types list based on selection
+        panel_types = ["products", "support", "help", "reviews"]
         if selection == "all":
-            panel_types = ["products", "support", "help", "reviews"]
+            selected_panels = panel_types
         else:
-            panel_types = [selection]
+            selected_panels = [selection]
 
-        # Clean up any existing state for this user
-        if interaction.user.id in self.user_states:
-            await self._cleanup_wizard_state(interaction.user.id, "New session started")
+        # Create setup session key
+        session_key = self._get_session_key(interaction.guild.id, interaction.user.id)
 
-        # Create new wizard state
-        self.user_states[interaction.user.id] = WizardState(
-            user_id=interaction.user.id,
+        # Check for existing session and clean it up
+        if session_key in self.setup_sessions:
+            await self._cleanup_setup_session(
+                interaction.guild.id, 
+                interaction.user.id, 
+                "New setup selection"
+            )
+
+        # Create new setup session with per-session lock
+        session = SetupSession(
             guild_id=interaction.guild.id,
-            panel_types=panel_types,
+            user_id=interaction.user.id,
+            panel_types=selected_panels,
             current_index=0,
             completed_panels=[],
             rollback_stack=[],
+            eligible_channels=eligible_channels,
             started_at=datetime.now(timezone.utc),
+            session_lock=asyncio.Lock(),
+        )
+        self.setup_sessions[session_key] = session
+
+        # Show success message with eligible channels
+        channels_text = "\n".join([f"• {channel.mention}" for channel in eligible_channels[:5]])
+        if len(eligible_channels) > 5:
+            channels_text += f"\n... and {len(eligible_channels) - 5} more channels"
+
+        await interaction.response.send_message(
+            f"✅ **Setup session started!**\n\n"
+            f"**Eligible channels found:** {len(eligible_channels)}\n"
+            f"{channels_text}\n\n"
+            f"**Setting up:** {', '.join([p.title() for p in selected_panels])}\n\n"
+            f"Now deploying **{selected_panels[0].title()}** panel...",
+            ephemeral=True
         )
 
-        # Show modal for the first panel
-        first_panel = panel_types[0]
-        modal = ChannelInputModal(first_panel)
-        await interaction.response.send_modal(modal)
+        # Start with the first panel deployment
+        await self._start_panel_deployment(interaction, selected_panels[0], session)
+
+    async def _start_panel_deployment(self, interaction: discord.Interaction, 
+                                    panel_type: str, session: SetupSession) -> None:
+        """Start panel deployment for a specific panel type."""
+        # Show channel selection modal with eligible channels
+        modal = ChannelInputModal(panel_type, session)
+        await interaction.followup.send_modal(modal)
 
     async def _process_channel_input(
-        self, interaction: discord.Interaction, channel_input: str, panel_type: str
+        self, interaction: discord.Interaction, channel_input: str, 
+        panel_type: str, session: Optional[SetupSession] = None
     ) -> None:
         """Process channel input and deploy panel with comprehensive error recovery."""
         if interaction.guild is None:
@@ -716,35 +1023,27 @@ class SetupCog(commands.Cog):
             )
             return
 
-        # Get user state
-        state = self.user_states.get(interaction.user.id)
-        if not state:
-            await interaction.followup.send(
-                "Session expired. Please start over with `!setup`.",
-                ephemeral=True,
-            )
-            return
+        # Use provided session or look up by guild/user
+        if session is None:
+            session_key = self._get_session_key(interaction.guild.id, interaction.user.id)
+            session = self.setup_sessions.get(session_key)
+            
+            if session is None:
+                await interaction.followup.send(
+                    "❌ Setup session not found. Please start setup again.",
+                    ephemeral=True
+                )
+                return
 
-        # Validate state
-        current_index = state.get("current_index", 0) if isinstance(state, dict) else state.current_index
-        panel_types = state.get("panel_types", []) if isinstance(state, dict) else state.panel_types
-
-        if current_index >= len(panel_types):
+        # Validate session state
+        if session.current_index >= len(session.panel_types):
             await interaction.followup.send(
                 "Setup complete!", ephemeral=True
             )
             return
 
-        # Find the channel
-        channel = None
-        if channel_input.startswith("#"):
-            channel_input = channel_input[1:]
-
-        for ch in interaction.guild.text_channels:
-            if ch.name.lower() == channel_input.lower() or str(ch.id) == channel_input:
-                channel = ch
-                break
-
+        # Find the channel from user input
+        channel = self._find_channel_by_input(interaction.guild, channel_input)
         if not channel:
             await interaction.followup.send(
                 f"❌ Channel `{channel_input}` not found. Please try again.",
@@ -752,18 +1051,18 @@ class SetupCog(commands.Cog):
             )
             return
 
-        # Validate permissions
-        try:
-            await self._validate_operation_prerequisites(interaction.guild, channel)
-        except SetupOperationError as e:
+        # Check if channel is in eligible channels list
+        if channel not in session.eligible_channels:
             await interaction.followup.send(
-                f"❌ {str(e)}", ephemeral=True
+                f"❌ Channel {channel.mention} is not eligible. "
+                "Bot needs 'Send Messages' and 'Embed Links' permissions.",
+                ephemeral=True
             )
             return
 
         # Use the panel_type from the modal (ensures consistency)
         # but verify it matches what we expect
-        expected_panel = panel_types[current_index]
+        expected_panel = session.panel_types[session.current_index]
         if panel_type != expected_panel:
             logger.warning(
                 f"Panel type mismatch: modal={panel_type}, expected={expected_panel}. Using modal value."
@@ -785,22 +1084,15 @@ class SetupCog(commands.Cog):
                 )
                 return
 
-            # Update wizard state
-            if isinstance(state, dict):
-                # Legacy state format - migrate to new format
-                state["current_index"] = current_index + 1
-                next_index = current_index + 1
-            else:
-                # New WizardState format
-                state.current_index = current_index + 1
-                state.completed_panels.append(panel_type)
-                next_index = state.current_index
+            # Update session state
+            session.current_index += 1
+            session.completed_panels.append(panel_type)
 
             emoji = self._get_panel_emoji(panel_type)
             
             # Check if there are more panels to deploy
-            if next_index < len(panel_types):
-                next_panel = panel_types[next_index]
+            if session.current_index < len(session.panel_types):
+                next_panel = session.panel_types[session.current_index]
                 next_emoji = self._get_panel_emoji(next_panel)
                 
                 # Send success message with button to continue
@@ -818,8 +1110,12 @@ class SetupCog(commands.Cog):
                     "🎉 All panels deployed successfully!",
                     ephemeral=True,
                 )
-                # Clean up state
-                await self._cleanup_wizard_state(interaction.user.id, "Setup completed successfully")
+                # Clean up session
+                await self._cleanup_setup_session(
+                    session.guild_id, 
+                    session.user_id, 
+                    "Setup completed successfully"
+                )
 
         except SetupOperationError as e:
             error_msg = f"❌ Failed to deploy {panel_type} panel"
@@ -840,6 +1136,18 @@ class SetupCog(commands.Cog):
                 ephemeral=True,
             )
             logger.error(f"Unexpected error in setup for user {interaction.user.id}: {e}")
+
+    def _find_channel_by_input(self, guild: discord.Guild, channel_input: str) -> Optional[discord.TextChannel]:
+        """Find a text channel by user input (name, mention, or ID)."""
+        if channel_input.startswith("#"):
+            channel_input = channel_input[1:]
+
+        for channel in guild.text_channels:
+            if (channel.name.lower() == channel_input.lower() or 
+                str(channel.id) == channel_input):
+                return channel
+        
+        return None
 
     async def _show_deployment_menu(
         self, interaction: discord.Interaction, panel_type_input: str
