@@ -64,7 +64,7 @@ class ManualOrdersCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         user: discord.Member,
-        amount: app_commands.Range[float, 0.01, 100000.0],
+        amount: "app_commands.Range[float, 0.01, 100000.0]",
         product_name: str,
         notes: str = "",
     ) -> None:
