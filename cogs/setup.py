@@ -1237,11 +1237,22 @@ class SetupCog(commands.Cog):
             for component in message.components:
                 if hasattr(component, 'children'):
                     for child in component.children:
-                        if hasattr(child, 'label'):
+                        # Check custom_id first (most reliable)
+                        custom_id = getattr(child, 'custom_id', '').lower()
+                        if custom_id == 'ticket_panel:support':
+                            support_buttons_found = True
+                        elif custom_id == 'ticket_panel:refund':
+                            refund_buttons_found = True
+                        
+                        # Fallback to label matching if custom_id check didn't catch it
+                        # This ensures backward compatibility or manual copies
+                        if hasattr(child, 'label') and child.label:
                             label = child.label.lower()
+                            # Check independent conditions so one button can satisfy multiple requirements
+                            # or properly distinguish buttons that share keywords
                             if "support" in label:
                                 support_buttons_found = True
-                            elif "refund" in label:
+                            if "refund" in label:
                                 refund_buttons_found = True
             
             if not support_buttons_found:
@@ -1264,23 +1275,26 @@ class SetupCog(commands.Cog):
                 return {"valid": False, "issues": issues}
                 
             embed = message.embeds[0]
-            if not embed.title or "help" not in embed.title.lower():
+            # Updated to match actual title: "❓ How to Use Apex Core"
+            if not embed.title or "how to use apex core" not in embed.title.lower():
                 issues.append("Invalid or missing help panel title")
             
-            # Check for help sections buttons
-            help_buttons_found = False
+            # Check for required fields instead of buttons
+            # The help panel now uses an embed-only design without interactive buttons
+            required_topics = ["browse products", "make purchases", "open tickets", "refunds"]
+            found_topics = set()
             
-            for component in message.components:
-                if hasattr(component, 'children'):
-                    for child in component.children:
-                        if hasattr(child, 'label'):
-                            label = child.label.lower()
-                            if any(section in label for section in ["getting started", "troubleshooting", "faq"]):
-                                help_buttons_found = True
-                                break
+            if embed.fields:
+                for field in embed.fields:
+                    field_name = field.name.lower()
+                    for topic in required_topics:
+                        if topic in field_name:
+                            found_topics.add(topic)
             
-            if not help_buttons_found:
-                issues.append("Missing help section buttons")
+            missing_topics = [topic for topic in required_topics if topic not in found_topics]
+            
+            if missing_topics:
+                issues.append(f"Missing help sections: {', '.join(missing_topics)}")
             
             return {"valid": len(issues) == 0, "issues": issues}
             
@@ -1297,23 +1311,26 @@ class SetupCog(commands.Cog):
                 return {"valid": False, "issues": issues}
                 
             embed = message.embeds[0]
-            if not embed.title or "review" not in embed.title.lower():
+            # Updated to match actual title: "⭐ Share Your Experience"
+            if not embed.title or "share your experience" not in embed.title.lower():
                 issues.append("Invalid or missing reviews panel title")
             
-            # Check for review buttons
-            review_buttons_found = False
+            # Check for required fields instead of buttons
+            # The reviews panel is informational, buttons are not part of the panel itself
+            required_sections = ["leave a review", "rating system", "earn rewards"]
+            found_sections = set()
             
-            for component in message.components:
-                if hasattr(component, 'children'):
-                    for child in component.children:
-                        if hasattr(child, 'label'):
-                            label = child.label.lower()
-                            if any(action in label for action in ["write review", "view reviews"]):
-                                review_buttons_found = True
-                                break
+            if embed.fields:
+                for field in embed.fields:
+                    field_name = field.name.lower()
+                    for section in required_sections:
+                        if section in field_name:
+                            found_sections.add(section)
             
-            if not review_buttons_found:
-                issues.append("Missing review action buttons")
+            missing_sections = [section for section in required_sections if section not in found_sections]
+            
+            if missing_sections:
+                issues.append(f"Missing review sections: {', '.join(missing_sections)}")
             
             return {"valid": len(issues) == 0, "issues": issues}
             
