@@ -175,8 +175,12 @@ class TestAtomicTransactions(unittest.TestCase):
         """Test successful database transaction commits properly."""
         async def run_test():
             mock_bot = create_mock_bot()
+
+            cursor_mock = Mock()
+            cursor_mock.lastrowid = 123
+
             transaction_mock = AsyncMock()
-            transaction_mock.execute_insert = AsyncMock(return_value=123)
+            transaction_mock.execute = AsyncMock(return_value=cursor_mock)
             
             # Create proper async context manager
             class MockTx:
@@ -188,13 +192,15 @@ class TestAtomicTransactions(unittest.TestCase):
             mock_bot.db.transaction = Mock(return_value=MockTx())
             
             async with mock_bot.db.transaction() as tx:
-                result = await tx.execute_insert(
+                cursor = await tx.execute(
                     "INSERT INTO permanent_messages (type, message_id) VALUES (?, ?)",
                     ("products", 456)
                 )
+                result = cursor.lastrowid
             
             # Verify transaction context manager was used correctly
             self.assertEqual(result, 123)
+            transaction_mock.execute.assert_awaited_once()
             mock_bot.db.transaction.assert_called_once()
         
         asyncio.run(run_test())
@@ -257,9 +263,11 @@ class TestAtomicTransactions(unittest.TestCase):
             mock_bot.db.find_panel = AsyncMock(return_value=None)
             
             # Mock transaction context manager properly
+            cursor_mock = Mock()
+            cursor_mock.lastrowid = 456
+
             transaction_mock = Mock()
-            transaction_mock.execute_insert = AsyncMock(return_value=456)
-            transaction_mock.execute = AsyncMock()
+            transaction_mock.execute = AsyncMock(return_value=cursor_mock)
             
             class MockTx:
                 def __init__(self):
@@ -290,6 +298,15 @@ class TestAtomicTransactions(unittest.TestCase):
             
             self.assertTrue(result)
             mock_bot.db.transaction.assert_called_once()
+            transaction_mock.execute.assert_awaited()
+
+            executed_sql = transaction_mock.execute.call_args.args[0]
+            self.assertIn("INSERT INTO permanent_messages", executed_sql)
+
+            # Ensure the insert cursor.lastrowid was consumed into rollback info
+            created_ops = [op for op in session.rollback_stack if op.operation_type == "panel_created"]
+            self.assertEqual(len(created_ops), 1)
+            self.assertEqual(created_ops[0].panel_id, 456)
         
         asyncio.run(run_test())
 

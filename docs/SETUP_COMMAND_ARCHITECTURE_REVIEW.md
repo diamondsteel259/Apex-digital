@@ -465,16 +465,16 @@ This section is intended as a starting point for follow-up fixes.
 - Current reviews panel returns **no components**.
 - Result: validation fails.
 
-### 5.2 Panel deployment transaction bugs (`execute_insert`)
+### 5.2 Panel deployment transaction insert (aiosqlite `execute` + `lastrowid`)
 
-In `_deploy_panel`, the “create new panel record” path uses:
+`Database.transaction()` yields a raw `aiosqlite.Connection` (`apex_core/database.py:2782+`). When inserting new panel records inside that transaction, the correct pattern is:
+
 ```py
-panel_id = await tx.execute_insert(...)
+cursor = await tx.execute("INSERT INTO ...", params)
+panel_id = cursor.lastrowid
 ```
-But `Database.transaction()` currently yields a raw `aiosqlite.Connection` (`apex_core/database.py:2782+`), which **does not have `execute_insert`**.
 
-Impact:
-- New panel deployments will raise an `AttributeError` during DB insert, be caught by `_deploy_panel`, and return `False`.
+This keeps the insert on the same transaction object as any subsequent `UPDATE` statements and lets rollback info capture the freshly created `panel_id`.
 
 ### 5.3 Validation failure does not automatically rollback
 
@@ -528,7 +528,6 @@ Many views implement `on_timeout()` by calling `self.original_interaction.follow
 ### 5.9 “sqlite Row rollback error” (likely sources)
 
 No literal `sqlite3.Row` error string is present in the repository, but the following code paths are strong candidates for the reported rollback problems:
-- `_deploy_panel` uses a non-existent `execute_insert` API during a transaction (see 5.2). This can surface as a failed transaction and cascading cleanup/rollback behaviors.
 - DB transaction manager uses SQL statements `BEGIN TRANSACTION` / `ROLLBACK` / `COMMIT` (`apex_core/database.py:2782+`) rather than connection-level `commit()` / `rollback()`. If nested transactions or implicit transactions occur elsewhere, SQLite can raise unexpected transaction-state errors.
 
 ---
