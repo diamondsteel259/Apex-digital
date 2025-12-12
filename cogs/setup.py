@@ -989,7 +989,7 @@ class SetupCog(commands.Cog):
                     session.rollback_stack.append(update_rollback)
                 else:
                     # Create new panel record
-                    panel_id = await tx.execute_insert(
+                    cursor = await tx.execute(
                         """
                         INSERT INTO permanent_messages 
                         (type, message_id, channel_id, guild_id, title, description, created_by_staff_id)
@@ -997,6 +997,7 @@ class SetupCog(commands.Cog):
                         """,
                         (panel_type, message.id, channel.id, guild.id, embed.title, embed.description, user_id)
                     )
+                    panel_id = cursor.lastrowid
                     
                     # Add rollback info for panel creation
                     create_rollback = RollbackInfo(
