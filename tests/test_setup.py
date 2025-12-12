@@ -1128,5 +1128,445 @@ class TestSlashVsPrefixInvocation(unittest.TestCase):
         asyncio.run(run_test())
 
 
+class TestSessionPersistence(unittest.TestCase):
+    """Test session persistence with current_index and completed_panels."""
+    
+    def test_save_session_to_db_calls_create_with_correct_values(self):
+        """Test that _save_session_to_db passes live session state to database."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.db.create_setup_session = AsyncMock()
+            
+            cog = create_setup_cog(mock_bot)
+            
+            # Create a session with progress
+            session = SetupSession(
+                guild_id=123,
+                user_id=456,
+                panel_types=["products", "support", "help"],
+                current_index=2,  # On third panel
+                completed_panels=["products", "support"],  # Two completed
+                rollback_stack=[],
+                eligible_channels=[]
+            )
+            
+            # Save session to DB
+            await cog._save_session_to_db(session)
+            
+            # Verify create_setup_session was called with correct values
+            mock_bot.db.create_setup_session.assert_called_once()
+            call_args = mock_bot.db.create_setup_session.call_args
+            
+            # Check positional and keyword arguments
+            self.assertEqual(call_args.kwargs['guild_id'], 123)
+            self.assertEqual(call_args.kwargs['user_id'], 456)
+            self.assertEqual(call_args.kwargs['panel_types'], ["products", "support", "help"])
+            self.assertEqual(call_args.kwargs['current_index'], 2)
+            self.assertEqual(call_args.kwargs['completed_panels'], ["products", "support"])
+            
+            # Verify session_payload includes the state
+            session_payload = json.loads(call_args.kwargs['session_payload'])
+            self.assertEqual(session_payload['current_index'], 2)
+            self.assertEqual(session_payload['completed_panels'], ["products", "support"])
+        
+        asyncio.run(run_test())
+    
+    def test_save_session_handles_exceptions_gracefully(self):
+        """Test that _save_session_to_db handles database errors gracefully."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.db.create_setup_session = AsyncMock(side_effect=Exception("DB connection lost"))
+            
+            cog = create_setup_cog(mock_bot)
+            
+            session = SetupSession(
+                guild_id=123,
+                user_id=456,
+                panel_types=["products"],
+                current_index=0,
+                completed_panels=[],
+                rollback_stack=[],
+                eligible_channels=[]
+            )
+            
+            # Should not raise exception - errors are logged
+            await cog._save_session_to_db(session)
+            
+            # Verify method was called
+            mock_bot.db.create_setup_session.assert_called_once()
+        
+        asyncio.run(run_test())
+    
+    def test_save_session_with_zero_index(self):
+        """Test saving session at start with current_index=0."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.db.create_setup_session = AsyncMock()
+            
+            cog = create_setup_cog(mock_bot)
+            
+            # Create session at start
+            session = SetupSession(
+                guild_id=789,
+                user_id=111,
+                panel_types=["products", "support"],
+                current_index=0,  # Starting position
+                completed_panels=[],  # Nothing completed yet
+                rollback_stack=[],
+                eligible_channels=[]
+            )
+            
+            await cog._save_session_to_db(session)
+            
+            call_args = mock_bot.db.create_setup_session.call_args
+            self.assertEqual(call_args.kwargs['current_index'], 0)
+            self.assertEqual(call_args.kwargs['completed_panels'], [])
+        
+        asyncio.run(run_test())
+    
+    def test_save_session_all_panels_completed(self):
+        """Test saving session with all panels completed."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.db.create_setup_session = AsyncMock()
+            
+            cog = create_setup_cog(mock_bot)
+            
+            # Create session with all panels completed
+            all_panels = ["products", "support", "help", "reviews"]
+            session = SetupSession(
+                guild_id=999,
+                user_id=222,
+                panel_types=all_panels,
+                current_index=4,  # Beyond last panel
+                completed_panels=all_panels,  # All completed
+                rollback_stack=[],
+                eligible_channels=[]
+            )
+            
+            await cog._save_session_to_db(session)
+            
+            call_args = mock_bot.db.create_setup_session.call_args
+            self.assertEqual(call_args.kwargs['current_index'], 4)
+            self.assertEqual(call_args.kwargs['completed_panels'], all_panels)
+            self.assertEqual(len(call_args.kwargs['completed_panels']), 4)
+        
+        asyncio.run(run_test())
+
+
+class TestSessionRestoration(unittest.TestCase):
+    """Test session restoration from database."""
+    
+    def test_restore_session_with_non_zero_index(self):
+        """Test that restored sessions maintain their progress index."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.wait_until_ready = AsyncMock()
+            
+            # Mock database returning a session with progress
+            mock_bot.db.get_all_active_sessions = AsyncMock(return_value=[
+                {
+                    "guild_id": 123,
+                    "user_id": 456,
+                    "panel_types": json.dumps(["products", "support", "help"]),
+                    "current_index": 2,  # On third panel
+                    "completed_panels": json.dumps(["products", "support"]),
+                    "session_payload": json.dumps({
+                        "panel_types": ["products", "support", "help"],
+                        "current_index": 2,
+                        "completed_panels": ["products", "support"],
+                        "started_at": None,
+                        "timestamp": None
+                    })
+                }
+            ])
+            mock_bot.db.cleanup_expired_sessions = AsyncMock(return_value=0)
+            
+            # Mock guild
+            mock_guild = create_mock_guild()
+            mock_guild.id = 123
+            mock_bot.get_guild = Mock(return_value=mock_guild)
+            
+            cog = create_setup_cog(mock_bot)
+            
+            # Mock _precompute_eligible_channels to return empty list for simplicity
+            with patch.object(cog, '_precompute_eligible_channels', return_value=[]):
+                await cog._restore_sessions_on_startup()
+            
+            # Verify session was restored with correct index
+            session_key = (123, 456)
+            self.assertIn(session_key, cog.setup_sessions)
+            
+            restored_session = cog.setup_sessions[session_key]
+            self.assertEqual(restored_session.current_index, 2)
+            self.assertEqual(restored_session.completed_panels, ["products", "support"])
+            self.assertEqual(len(restored_session.panel_types), 3)
+        
+        asyncio.run(run_test())
+    
+    def test_restore_multiple_sessions_different_progress(self):
+        """Test restoring multiple sessions with different progress levels."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            mock_bot.config.setup_settings = Mock()
+            mock_bot.config.setup_settings.session_timeout_minutes = 30
+            mock_bot.wait_until_ready = AsyncMock()
+            
+            # Mock database returning multiple sessions at different stages
+            mock_bot.db.get_all_active_sessions = AsyncMock(return_value=[
+                {
+                    "guild_id": 111,
+                    "user_id": 222,
+                    "panel_types": json.dumps(["products", "support"]),
+                    "current_index": 0,
+                    "completed_panels": json.dumps([]),
+                    "session_payload": json.dumps({})
+                },
+                {
+                    "guild_id": 111,
+                    "user_id": 333,
+                    "panel_types": json.dumps(["products", "support", "help"]),
+                    "current_index": 1,
+                    "completed_panels": json.dumps(["products"]),
+                    "session_payload": json.dumps({})
+                },
+                {
+                    "guild_id": 444,
+                    "user_id": 222,
+                    "panel_types": json.dumps(["help", "reviews"]),
+                    "current_index": 2,
+                    "completed_panels": json.dumps(["help", "reviews"]),
+                    "session_payload": json.dumps({})
+                }
+            ])
+            mock_bot.db.cleanup_expired_sessions = AsyncMock(return_value=0)
+            
+            # Mock guilds
+            mock_guild1 = create_mock_guild()
+            mock_guild1.id = 111
+            mock_guild2 = create_mock_guild()
+            mock_guild2.id = 444
+            mock_bot.get_guild = Mock(side_effect=lambda gid: mock_guild1 if gid == 111 else mock_guild2)
+            
+            cog = create_setup_cog(mock_bot)
+            
+            with patch.object(cog, '_precompute_eligible_channels', return_value=[]):
+                await cog._restore_sessions_on_startup()
+            
+            # Verify all sessions restored with correct state
+            self.assertEqual(len(cog.setup_sessions), 3)
+            
+            # Session 1: Just started
+            session1 = cog.setup_sessions[(111, 222)]
+            self.assertEqual(session1.current_index, 0)
+            self.assertEqual(len(session1.completed_panels), 0)
+            
+            # Session 2: One panel done
+            session2 = cog.setup_sessions[(111, 333)]
+            self.assertEqual(session2.current_index, 1)
+            self.assertEqual(session2.completed_panels, ["products"])
+            
+            # Session 3: All done
+            session3 = cog.setup_sessions[(444, 222)]
+            self.assertEqual(session3.current_index, 2)
+            self.assertEqual(session3.completed_panels, ["help", "reviews"])
+        
+        asyncio.run(run_test())
+
+
+class TestSessionPersistenceIntegration(unittest.TestCase):
+    """Integration tests for session persistence with actual database."""
+    
+    def test_save_and_restore_session_roundtrip(self):
+        """Test that a session can be saved and restored with correct state."""
+        async def run_test():
+            import tempfile
+            import os
+            from apex_core.database import Database
+            
+            # Create temporary database
+            with tempfile.TemporaryDirectory() as tmpdir:
+                db_path = os.path.join(tmpdir, "test.db")
+                db = Database(db_path)
+                
+                try:
+                    # Connect and initialize schema
+                    await db.connect()
+                    
+                    # Save a session with progress
+                    guild_id = 123
+                    user_id = 456
+                    panel_types = ["products", "support", "help", "reviews"]
+                    current_index = 2
+                    completed_panels = ["products", "support"]
+                    
+                    session_payload = json.dumps({
+                        "panel_types": panel_types,
+                        "current_index": current_index,
+                        "completed_panels": completed_panels,
+                        "started_at": None,
+                        "timestamp": None,
+                    })
+                    
+                    # Insert session
+                    await db.create_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        panel_types=panel_types,
+                        current_index=current_index,
+                        completed_panels=completed_panels,
+                        session_payload=session_payload,
+                        expires_at=None,
+                    )
+                    
+                    # Retrieve session
+                    retrieved = await db.get_setup_session(guild_id, user_id)
+                    
+                    # Verify state was preserved
+                    self.assertIsNotNone(retrieved)
+                    self.assertEqual(retrieved["guild_id"], guild_id)
+                    self.assertEqual(retrieved["user_id"], user_id)
+                    self.assertEqual(retrieved["current_index"], current_index)
+                    
+                    # Verify JSON fields
+                    self.assertEqual(json.loads(retrieved["panel_types"]), panel_types)
+                    self.assertEqual(json.loads(retrieved["completed_panels"]), completed_panels)
+                    
+                    # Verify payload
+                    payload = json.loads(retrieved["session_payload"])
+                    self.assertEqual(payload["current_index"], current_index)
+                    self.assertEqual(payload["completed_panels"], completed_panels)
+                    
+                finally:
+                    await db.close()
+        
+        asyncio.run(run_test())
+    
+    def test_update_session_progress(self):
+        """Test that session progress can be updated correctly."""
+        async def run_test():
+            import tempfile
+            import os
+            from apex_core.database import Database
+            
+            # Create temporary database
+            with tempfile.TemporaryDirectory() as tmpdir:
+                db_path = os.path.join(tmpdir, "test.db")
+                db = Database(db_path)
+                
+                try:
+                    await db.connect()
+                    
+                    guild_id = 789
+                    user_id = 111
+                    panel_types = ["products", "support", "help"]
+                    
+                    # Create initial session
+                    await db.create_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        panel_types=panel_types,
+                        current_index=0,
+                        completed_panels=[],
+                        session_payload=json.dumps({}),
+                        expires_at=None,
+                    )
+                    
+                    # Update progress - complete first panel
+                    await db.update_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        current_index=1,
+                        completed_panels=["products"],
+                    )
+                    
+                    # Verify update
+                    session = await db.get_setup_session(guild_id, user_id)
+                    self.assertEqual(session["current_index"], 1)
+                    self.assertEqual(json.loads(session["completed_panels"]), ["products"])
+                    
+                    # Update again - complete second panel
+                    await db.update_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        current_index=2,
+                        completed_panels=["products", "support"],
+                    )
+                    
+                    # Verify second update
+                    session = await db.get_setup_session(guild_id, user_id)
+                    self.assertEqual(session["current_index"], 2)
+                    self.assertEqual(json.loads(session["completed_panels"]), ["products", "support"])
+                    
+                finally:
+                    await db.close()
+        
+        asyncio.run(run_test())
+    
+    def test_upsert_behavior_on_conflict(self):
+        """Test that ON CONFLICT updates existing session with new state."""
+        async def run_test():
+            import tempfile
+            import os
+            from apex_core.database import Database
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                db_path = os.path.join(tmpdir, "test.db")
+                db = Database(db_path)
+                
+                try:
+                    await db.connect()
+                    
+                    guild_id = 999
+                    user_id = 222
+                    
+                    # Create initial session
+                    await db.create_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        panel_types=["products"],
+                        current_index=0,
+                        completed_panels=[],
+                        session_payload=json.dumps({}),
+                        expires_at=None,
+                    )
+                    
+                    # Call create again with updated state (should upsert)
+                    await db.create_setup_session(
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        panel_types=["products", "support", "help"],
+                        current_index=2,
+                        completed_panels=["products", "support"],
+                        session_payload=json.dumps({"updated": True}),
+                        expires_at=None,
+                    )
+                    
+                    # Verify only one session exists with updated state
+                    session = await db.get_setup_session(guild_id, user_id)
+                    self.assertEqual(session["current_index"], 2)
+                    self.assertEqual(json.loads(session["completed_panels"]), ["products", "support"])
+                    self.assertEqual(json.loads(session["panel_types"]), ["products", "support", "help"])
+                    
+                    # Verify payload was updated
+                    payload = json.loads(session["session_payload"])
+                    self.assertEqual(payload.get("updated"), True)
+                    
+                finally:
+                    await db.close()
+        
+        asyncio.run(run_test())
+
+
 if __name__ == "__main__":
     unittest.main()
