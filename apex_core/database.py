@@ -2818,6 +2818,8 @@ class Database:
         panel_types: list[str],
         session_payload: Optional[str] = None,
         expires_at: Optional[str] = None,
+        current_index: int = 0,
+        completed_panels: Optional[list[str]] = None,
     ) -> int:
         """Create a new setup session.
         
@@ -2827,6 +2829,8 @@ class Database:
             panel_types: List of panel types to set up
             session_payload: Serialized session state (JSON)
             expires_at: Expiration timestamp in ISO format
+            current_index: Current position in setup flow (default: 0)
+            completed_panels: List of completed panel types (default: [])
             
         Returns:
             Session ID
@@ -2835,19 +2839,21 @@ class Database:
             raise RuntimeError("Database connection not initialized.")
 
         panel_types_str = json.dumps(panel_types)
+        completed_panels_str = json.dumps(completed_panels if completed_panels is not None else [])
         
         cursor = await self._connection.execute(
             """
-            INSERT INTO setup_sessions (guild_id, user_id, panel_types, session_payload, expires_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO setup_sessions (guild_id, user_id, panel_types, current_index, completed_panels, session_payload, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 panel_types = excluded.panel_types,
-                current_index = 0,
+                current_index = excluded.current_index,
+                completed_panels = excluded.completed_panels,
                 session_payload = excluded.session_payload,
                 expires_at = excluded.expires_at,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (guild_id, user_id, panel_types_str, session_payload, expires_at),
+            (guild_id, user_id, panel_types_str, current_index, completed_panels_str, session_payload, expires_at),
         )
         await self._connection.commit()
         return cursor.lastrowid

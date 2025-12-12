@@ -835,20 +835,28 @@ class SetupCog(commands.Cog):
                 "timestamp": session.timestamp.isoformat() if session.timestamp else None,
             })
             
-            completed_panels_json = json.dumps(session.completed_panels)
-            
-            # Create or update session in database
+            # Create or update session in database with live state
             await self.bot.db.create_setup_session(
                 guild_id=session.guild_id,
                 user_id=session.user_id,
                 panel_types=session.panel_types,
+                current_index=session.current_index,
+                completed_panels=session.completed_panels,
                 session_payload=session_payload,
                 expires_at=expires_at,
             )
             
-            logger.debug(f"Saved setup session for guild {session.guild_id}, user {session.user_id}")
+            logger.debug(
+                f"Saved setup session for guild {session.guild_id}, user {session.user_id} "
+                f"(index: {session.current_index}/{len(session.panel_types)}, "
+                f"completed: {len(session.completed_panels)})"
+            )
         except Exception as e:
-            logger.error(f"Failed to save session to database: {e}")
+            logger.error(
+                f"Failed to save session to database for guild {session.guild_id}, user {session.user_id}: {e}. "
+                f"Session will continue in-memory but may be lost on bot restart.",
+                exc_info=True
+            )
 
     async def _restore_sessions_on_startup(self) -> None:
         """Restore in-progress setup sessions from the database on bot startup."""
