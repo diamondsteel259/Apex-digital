@@ -147,18 +147,55 @@ class SetupMenuSelect(discord.ui.Select["SetupMenuView"]):
 class SetupMenuView(discord.ui.View):
     """View for the initial setup menu."""
     
-    def __init__(self) -> None:
+    def __init__(
+        self, 
+        original_interaction: Optional[discord.Interaction] = None,
+        command_context: Optional[commands.Context] = None,
+        original_message: Optional[discord.Message] = None,
+        user_id: Optional[int] = None
+    ) -> None:
         super().__init__(timeout=300)
         self.add_item(SetupMenuSelect())
+        self.original_interaction = original_interaction
+        self.command_context = command_context
+        self.original_message = original_message
+        self.user_id = user_id
     
     async def on_timeout(self) -> None:
         """Handle view timeout by notifying the original invoker."""
         try:
-            if hasattr(self, 'original_interaction') and self.original_interaction:
+            if self.original_interaction:
+                # Slash command path - use interaction followup
                 await self.original_interaction.followup.send(
                     "⏰ Setup menu timed out. Please run the setup command again.",
                     ephemeral=True
                 )
+            elif self.command_context:
+                # Prefix command path - send to command context
+                timeout_message = (
+                    "⏰ Setup menu timed out. Please run the setup command again.\n"
+                    "Try using `/setup` for a faster experience!"
+                )
+                await self.command_context.send(timeout_message)
+            elif self.original_message:
+                # Fallback: try to send to original message channel
+                try:
+                    await self.original_message.channel.send(
+                        "⏰ Setup menu timed out. Please run the setup command again."
+                    )
+                except discord.Forbidden:
+                    # If we can't send to channel, try to DM the user
+                    if hasattr(self, 'user_id'):
+                        user = self.command_context.bot.get_user(self.user_id) if self.command_context else None
+                        if user:
+                            try:
+                                await user.send(
+                                    "⏰ Setup menu timed out. Please run the setup command again."
+                                )
+                            except discord.Forbidden:
+                                pass  # User has DMs disabled
+                except Exception as e:
+                    logger.error(f"Failed to send timeout message via original message: {e}")
         except Exception as e:
             logger.error(f"Failed to send timeout message: {e}")
 
@@ -1708,6 +1745,36 @@ class SetupCog(commands.Cog):
                         f"\n\n🎉 Your Apex Core server is ready to use!"
             )
             
+            # Persist provisioned IDs to config before cleanup
+            try:
+                # Build mappings of all provisioned/reused resources
+                role_mapping = {}
+                for role in created_roles + reused_roles:
+                    if role.name not in role_mapping:  # Avoid duplicates
+                        role_mapping[role.name] = role.id
+                
+                category_mapping = {}
+                for category in created_categories + reused_categories:
+                    if category.name not in category_mapping:  # Avoid duplicates
+                        category_mapping[category.name] = category.id
+                
+                channel_mapping = {}
+                for channel in created_channels + reused_channels:
+                    if channel.name not in channel_mapping:  # Avoid duplicates
+                        channel_mapping[channel.name] = channel.id
+                
+                # Log all provisioned IDs to config
+                await self._log_provisioned_ids(
+                    roles=role_mapping if role_mapping else None,
+                    categories=category_mapping if category_mapping else None,
+                    channels=channel_mapping if channel_mapping else None
+                )
+                
+                logger.info("Provisioned IDs persisted to config.json")
+            except Exception as e:
+                logger.error(f"Failed to persist provisioned IDs: {e}")
+                # Don't fail the entire operation for config issues
+            
             # Clean up session
             await self._cleanup_setup_session(
                 session.guild_id,
@@ -2506,8 +2573,11 @@ class SetupCog(commands.Cog):
         )
         embed.set_footer(text="Select from dropdown to continue")
 
-        view = SetupMenuView()
-        view.original_interaction = None  # Not from interaction
+        view = SetupMenuView(
+            command_context=ctx,
+            user_id=ctx.author.id,
+            original_message=ctx.message
+        )
         await ctx.send(embed=embed, view=view)
 
     @app_commands.command(name="setup", description="Interactive setup wizard for Apex Core panels")
@@ -2579,8 +2649,10 @@ class SetupCog(commands.Cog):
             )
             embed.set_footer(text="Select from dropdown to continue • Modern UI with channel selector")
             
-            view = SetupMenuView()
-            view.original_interaction = interaction
+            view = SetupMenuView(
+                original_interaction=interaction,
+                user_id=interaction.user.id
+            )
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             
         except SetupOperationError as e:
