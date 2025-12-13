@@ -845,6 +845,36 @@ class SetupCog(commands.Cog):
 
         return len(expired_users)
 
+    def _extract_ticket_categories(self, categories: Dict[str, int]) -> Dict[str, int]:
+        """Extract ticket_categories from provisioned categories.
+        
+        Maps category names from blueprint to ticket_categories config keys:
+        - "🛟 SUPPORT" -> "support"
+        - "💰 BILLING" -> "billing" (if present)
+        - "💼 SALES" -> "sales" (if present)
+        
+        Args:
+            categories: Mapping of category names to Discord category IDs
+            
+        Returns:
+            Dict mapping ticket category keys to IDs for config update
+        """
+        ticket_categories_map = {}
+        
+        # Define the mapping of blueprint category names to config keys
+        category_name_to_key = {
+            "🛟 SUPPORT": "support",
+            "💰 BILLING": "billing",
+            "💼 SALES": "sales",
+        }
+        
+        # Extract IDs for categories that exist in the provisioned categories
+        for category_name, config_key in category_name_to_key.items():
+            if category_name in categories:
+                ticket_categories_map[config_key] = categories[category_name]
+        
+        return ticket_categories_map
+
     async def _log_provisioned_ids(
         self,
         roles: Optional[Dict[str, int]] = None,
@@ -870,6 +900,12 @@ class SetupCog(commands.Cog):
                 await self.config_writer.set_category_ids(categories, bot=self.bot)
                 updates_made = True
                 logger.info(f"Updated category_ids in config: {categories}")
+                
+                # Update ticket_categories with IDs from blueprint categories
+                ticket_categories_updates = self._extract_ticket_categories(categories)
+                if ticket_categories_updates:
+                    await self.config_writer.set_ticket_categories(ticket_categories_updates, bot=self.bot)
+                    logger.info(f"Updated ticket_categories in config: {ticket_categories_updates}")
             
             if channels:
                 await self.config_writer.set_channel_ids(channels, bot=self.bot)
@@ -1838,6 +1874,18 @@ class SetupCog(commands.Cog):
                 logger.error(f"Failed to persist provisioned IDs: {e}")
                 # Don't fail the entire operation for config issues
             
+            # Audit permissions to ensure they were applied correctly
+            try:
+                audit_issues = await self._audit_permissions(
+                    guild,
+                    created_categories, reused_categories,
+                    created_channels, reused_channels
+                )
+                await self._log_permission_audit(guild, audit_issues)
+            except Exception as e:
+                logger.error(f"Failed to audit permissions: {e}")
+                # Don't fail the entire operation for audit issues
+            
             # Clean up session (success path - do not rollback)
             await self._cleanup_setup_session(
                 session.guild_id,
@@ -2116,6 +2164,168 @@ class SetupCog(commands.Cog):
             
         except Exception as e:
             logger.error(f"Failed to log full server setup audit: {e}")
+
+    async def _audit_permissions(
+        self,
+        guild: discord.Guild,
+        created_categories: List[discord.CategoryChannel],
+        reused_categories: List[discord.CategoryChannel],
+        created_channels: List[discord.TextChannel],
+        reused_channels: List[discord.TextChannel],
+    ) -> Dict[str, List[str]]:
+        """Audit permission overwrites to ensure they match blueprint expectations.
+        
+        Returns a dict of issues found:
+        - "missing_overwrites": List of missing overwrites
+        - "incorrect_permissions": List of incorrect permission settings
+        """
+        from apex_core.server_blueprint import get_apex_core_blueprint
+        
+        issues = {
+            "missing_overwrites": [],
+            "incorrect_permissions": [],
+        }
+        
+        try:
+            blueprint = get_apex_core_blueprint()
+            
+            # Build role map for easier lookup
+            role_map = self._build_role_map(guild)
+            
+            # Check all categories
+            all_categories = created_categories + reused_categories
+            for category in all_categories:
+                # Find matching blueprint
+                blueprint_cat = next((c for c in blueprint.categories if c.name == category.name), None)
+                if not blueprint_cat:
+                    continue
+                
+                # Check category overwrites
+                for role_name, perm_specs in blueprint_cat.overwrites.items():
+                    role = role_map.get(role_name)
+                    if not role:
+                        issues["missing_overwrites"].append(
+                            f"Category '{category.name}': Role '{role_name}' not found in guild"
+                        )
+                        continue
+                    
+                    # Check if overwrite exists
+                    overwrite = category.overwrites.get(role)
+                    if overwrite is None:
+                        issues["missing_overwrites"].append(
+                            f"Category '{category.name}': Missing overwrite for '{role_name}'"
+                        )
+                        continue
+                    
+                    # Verify each permission
+                    for perm_name, expected_value in perm_specs.items():
+                        actual_value = getattr(overwrite, perm_name, None)
+                        if actual_value != expected_value:
+                            issues["incorrect_permissions"].append(
+                                f"Category '{category.name}', {role_name}.{perm_name}: "
+                                f"expected {expected_value}, got {actual_value}"
+                            )
+            
+            # Check all channels
+            all_channels = created_channels + reused_channels
+            for channel in all_channels:
+                # Find parent category in blueprint
+                if not channel.category:
+                    continue
+                
+                blueprint_cat = next((c for c in blueprint.categories if c.name == channel.category.name), None)
+                if not blueprint_cat:
+                    continue
+                
+                # Find matching channel in blueprint
+                blueprint_chan = next((ch for ch in blueprint_cat.channels if ch.name == channel.name), None)
+                if not blueprint_chan:
+                    continue
+                
+                # Check channel overwrites
+                for role_name, perm_specs in blueprint_chan.overwrites.items():
+                    role = role_map.get(role_name)
+                    if not role:
+                        issues["missing_overwrites"].append(
+                            f"Channel '{channel.name}': Role '{role_name}' not found in guild"
+                        )
+                        continue
+                    
+                    # Check if overwrite exists
+                    overwrite = channel.overwrites.get(role)
+                    if overwrite is None:
+                        issues["missing_overwrites"].append(
+                            f"Channel '{channel.name}': Missing overwrite for '{role_name}'"
+                        )
+                        continue
+                    
+                    # Verify each permission
+                    for perm_name, expected_value in perm_specs.items():
+                        actual_value = getattr(overwrite, perm_name, None)
+                        if actual_value != expected_value:
+                            issues["incorrect_permissions"].append(
+                                f"Channel '{channel.name}', {role_name}.{perm_name}: "
+                                f"expected {expected_value}, got {actual_value}"
+                            )
+            
+        except Exception as e:
+            logger.error(f"Error during permission audit: {e}")
+            issues["missing_overwrites"].append(f"Audit error: {str(e)}")
+        
+        return issues
+
+    async def _log_permission_audit(
+        self,
+        guild: discord.Guild,
+        audit_issues: Dict[str, List[str]],
+    ) -> None:
+        """Log permission audit results to audit channel.
+        
+        Args:
+            guild: The guild that was set up
+            audit_issues: Dict of permission issues found
+        """
+        try:
+            audit_channel_id = self.bot.config.logging_channels.audit
+            if not audit_channel_id:
+                return
+            
+            audit_channel = guild.get_channel(audit_channel_id)
+            if not isinstance(audit_channel, discord.TextChannel):
+                return
+            
+            # Check if there are any issues
+            has_issues = any(audit_issues.get(key) for key in audit_issues)
+            
+            if has_issues:
+                embed = create_embed(
+                    title="⚠️ Permission Audit Results",
+                    description="Some permission overwrites may not be correctly applied.",
+                    color=discord.Color.orange(),
+                )
+                
+                if audit_issues.get("missing_overwrites"):
+                    embed.add_field(
+                        name="Missing Overwrites",
+                        value="\n".join(audit_issues["missing_overwrites"][:5]),
+                        inline=False
+                    )
+                
+                if audit_issues.get("incorrect_permissions"):
+                    embed.add_field(
+                        name="Incorrect Permissions",
+                        value="\n".join(audit_issues["incorrect_permissions"][:5]),
+                        inline=False
+                    )
+                
+                embed.set_footer(text="Review permissions manually if issues persist.")
+                await audit_channel.send(embed=embed)
+                logger.warning(f"Permission audit found issues: {audit_issues}")
+            else:
+                logger.info("Permission audit passed - all overwrites correctly applied")
+        
+        except Exception as e:
+            logger.error(f"Failed to log permission audit: {e}")
 
     async def _handle_setup_selection(
         self, interaction: discord.Interaction, selection: str

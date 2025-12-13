@@ -42,6 +42,7 @@ def create_setup_cog(mock_bot):
             self.set_role_ids_called_with = None
             self.set_category_ids_called_with = None
             self.set_channel_ids_called_with = None
+            self.set_ticket_categories_called_with = None
             
         async def set_role_ids(self, roles, bot=None):
             self.set_role_ids_called_with = (roles, bot)
@@ -51,6 +52,9 @@ def create_setup_cog(mock_bot):
             
         async def set_channel_ids(self, channels, bot=None):
             self.set_channel_ids_called_with = (channels, bot)
+            
+        async def set_ticket_categories(self, categories, bot=None):
+            self.set_ticket_categories_called_with = (categories, bot)
     
     mock_config_writer = MockConfigWriter()
     mock_bot.config_writer = mock_config_writer
@@ -1756,6 +1760,12 @@ class TestServerProvisioningIDPersistence(unittest.TestCase):
             self.assertEqual(cog.config_writer.set_role_ids_called_with, (roles, mock_bot))
             self.assertEqual(cog.config_writer.set_category_ids_called_with, (categories, mock_bot))
             self.assertEqual(cog.config_writer.set_channel_ids_called_with, (channels, mock_bot))
+            
+            # Verify ticket_categories were extracted and updated
+            expected_ticket_categories = {
+                "support": 555555555555555555,  # From "🛟 SUPPORT"
+            }
+            self.assertEqual(cog.config_writer.set_ticket_categories_called_with, (expected_ticket_categories, mock_bot))
         
         asyncio.run(run_test())
     
