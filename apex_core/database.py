@@ -33,14 +33,14 @@ class Database:
     async def connect(self) -> None:
         """Connect to the database with timeout protection and retry logic."""
         if self._connection is None:
-            max_retries = 1
+            max_retries = 5
             for attempt in range(max_retries + 1):
                 try:
                     self._connection = await asyncio.wait_for(
                         aiosqlite.connect(str(self.db_path)),
                         timeout=self.connect_timeout
                     )
-                    
+
                     try:
                         self._connection.row_factory = aiosqlite.Row
                         await self._connection.execute("PRAGMA foreign_keys = ON;")
@@ -55,9 +55,9 @@ class Database:
                             f"Database path: {self.db_path}"
                         )
                         raise
-                    
+
                     return
-                    
+
                 except asyncio.TimeoutError:
                     self._connection = None
                     timeout_msg = (
@@ -65,11 +65,13 @@ class Database:
                         f"(attempt {attempt + 1}/{max_retries + 1}). Database path: {self.db_path}"
                     )
                     if attempt < max_retries:
-                        logger.warning(f"{timeout_msg}. Retrying...")
+                        wait_seconds = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8, 16
+                        logger.warning(f"{timeout_msg}. Waiting {wait_seconds}s before retry...")
+                        await asyncio.sleep(wait_seconds)
                     else:
                         logger.error(f"{timeout_msg}. Max retries exhausted.")
                         raise TimeoutError(timeout_msg) from None
-                        
+
                 except Exception as conn_error:
                     self._connection = None
                     error_msg = (
@@ -77,7 +79,9 @@ class Database:
                         f"Database path: {self.db_path}"
                     )
                     if attempt < max_retries:
-                        logger.warning(f"{error_msg}. Retrying...")
+                        wait_seconds = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8, 16
+                        logger.warning(f"{error_msg}. Waiting {wait_seconds}s before retry...")
+                        await asyncio.sleep(wait_seconds)
                     else:
                         logger.error(f"{error_msg}. Max retries exhausted.")
                         raise RuntimeError(error_msg) from conn_error
@@ -2231,15 +2235,16 @@ class Database:
         return cursor.lastrowid
 
     async def log_referral_purchase(
-        self, referred_id: int, order_id: int, amount_cents: int
+        self, referred_id: int, order_id: int, amount_cents: int, cashback_percent: float = 0.5
     ) -> Optional[int]:
         """Log a purchase by a referred user and update cashback.
-        
+
         Args:
             referred_id: Discord ID of the user who made the purchase
             order_id: The order ID
             amount_cents: Amount of the purchase in cents
-            
+            cashback_percent: Cashback percentage (default: 0.5 for 0.5%)
+
         Returns:
             The cashback amount in cents if applicable, None if no referral or blacklisted
         """
@@ -2264,8 +2269,8 @@ class Database:
             logger.info(f"Referral for user {referred_id} is blacklisted, skipping cashback")
             return None
 
-        # Calculate 0.5% cashback
-        cashback_cents = int(amount_cents * 0.005)
+        # Calculate cashback based on configuration
+        cashback_cents = int(amount_cents * (cashback_percent / 100))
 
         # Update the referral record
         await self._connection.execute(

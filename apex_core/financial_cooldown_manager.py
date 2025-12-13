@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from apex_core.rate_limiter import get_rate_limiter
+from apex_core.utils.permissions import is_admin_from_bot
 
 logger = logging.getLogger(__name__)
 
@@ -228,22 +229,6 @@ def get_financial_cooldown_manager() -> FinancialCooldownManager:
     return _FINANCIAL_COOLDOWN_MANAGER
 
 
-def _is_admin(user: discord.abc.User, guild: Optional[discord.Guild], bot: commands.Bot | None) -> bool:
-    """Check if a user has admin privileges."""
-    if not guild or not bot or not getattr(bot, "config", None):
-        return False
-    
-    admin_role_id = getattr(bot.config.role_ids, "admin", None)
-    if not admin_role_id:
-        return False
-    
-    member = guild.get_member(user.id)
-    if not member:
-        return False
-    
-    return any(role.id == admin_role_id for role in getattr(member, "roles", []))
-
-
 async def _send_audit_log(
     *,
     bot: commands.Bot | None,
@@ -341,7 +326,7 @@ def financial_cooldown(
                 config = FinancialCooldownConfig(config.seconds, config.tier, operation_type)
             
             # Check admin bypass
-            if admin_bypass and _is_admin(user, guild, bot):
+            if admin_bypass and is_admin_from_bot(user, guild, bot):
                 logger.info("Admin %s bypassed financial cooldown for %s", user.id, command_key)
                 await _send_audit_log(
                     bot=bot,

@@ -377,6 +377,21 @@ class CategoryPaginatorButton(discord.ui.Button["CategorySelectView"]):
         self.direction = direction
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Apply rate limiting to prevent spam
+        allowed = await enforce_interaction_rate_limit(
+            interaction,
+            command_key="storefront_pagination",
+            cooldown=30,
+            max_uses=10,
+            per="user",
+            admin_bypass=True,
+            config_key="storefront_pagination",
+        )
+
+        if not allowed:
+            # Rate limit message already sent by enforce_interaction_rate_limit
+            return
+
         logger.info(
             "Category pagination: %s | User: %s (%s) | Guild: %s",
             self.direction,
@@ -384,7 +399,7 @@ class CategoryPaginatorButton(discord.ui.Button["CategorySelectView"]):
             interaction.user.id,
             interaction.guild_id,
         )
-        
+
         view = self.view
         if not isinstance(view, CategorySelectView):
             logger.warning("Invalid view type for category pagination | User: %s", interaction.user.id)

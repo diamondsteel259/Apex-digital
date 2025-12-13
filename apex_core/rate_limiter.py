@@ -16,6 +16,7 @@ from discord.ext import commands
 
 from apex_core.config import RateLimitRule
 from apex_core.logger import get_logger
+from apex_core.utils.permissions import is_admin_from_bot
 
 logger = get_logger()
 
@@ -191,21 +192,6 @@ def _build_violation_message(remaining_seconds: int, remaining_uses: int, settin
     ).format(time=time_str, attempts=attempts_text)
 
 
-def _is_admin(user: discord.abc.User, guild: Optional[discord.Guild], bot: commands.Bot | None) -> bool:
-    if not guild or not bot or not getattr(bot, "config", None):
-        return False
-
-    admin_role_id = getattr(bot.config.role_ids, "admin", None)
-    if not admin_role_id:
-        return False
-
-    member = guild.get_member(user.id)
-    if not member:
-        return False
-
-    return any(role.id == admin_role_id for role in getattr(member, "roles", []))
-
-
 def _get_scope_identifier(
     scope: RateLimitScope,
     user: discord.abc.User,
@@ -298,7 +284,7 @@ def rate_limit(
 
             identifier = _get_scope_identifier(settings.scope, user, channel, guild)
 
-            if admin_bypass and _is_admin(user, guild, bot):
+            if admin_bypass and is_admin_from_bot(user, guild, bot):
                 logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
                 await _send_audit_log(
                     bot=bot,
@@ -396,7 +382,7 @@ async def enforce_interaction_rate_limit(
 
     identifier = _get_scope_identifier(settings.scope, user, channel, guild)
 
-    if admin_bypass and _is_admin(user, guild, bot):
+    if admin_bypass and is_admin_from_bot(user, guild, bot):
         logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
         await _send_audit_log(
             bot=bot,
