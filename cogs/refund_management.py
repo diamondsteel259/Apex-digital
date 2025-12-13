@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import TYPE_CHECKING, Optional
 
@@ -21,6 +22,11 @@ from apex_core.logger import get_logger
 
 logger = get_logger()
 
+# Constants for refund amount validation
+MIN_REFUND_AMOUNT = Decimal("0.01")  # $0.01
+MAX_REFUND_AMOUNT = Decimal("100000.00")  # $100,000
+AMOUNT_PATTERN = re.compile(r"^\$?\s*\d{1,6}(?:,\d{3})*(?:\.\d{1,2})?$")
+
 
 def _cents_to_usd(cents: int) -> str:
     """Convert cents to USD string with proper formatting."""
@@ -34,6 +40,36 @@ def _usd_to_cents(usd_str: str) -> int:
         return int((dollars * Decimal(100)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
     except (ValueError, TypeError):
         raise ValueError(f"Invalid USD amount: {usd_str}")
+
+
+def _validate_refund_amount(amount_str: str) -> tuple[bool, str, Decimal | None]:
+    """
+    Validate refund amount format and bounds.
+
+    Returns:
+        (is_valid, error_message, decimal_amount)
+    """
+    # Check format
+    if not AMOUNT_PATTERN.match(amount_str):
+        return False, (
+            "Invalid amount format. Please use format like: $10.00, 10.00, or 10"
+        ), None
+
+    # Parse to Decimal
+    try:
+        clean_amount = amount_str.replace('$', '').replace(',', '').strip()
+        amount = Decimal(clean_amount)
+    except (ValueError, TypeError):
+        return False, "Invalid amount format. Please enter a valid number.", None
+
+    # Check bounds
+    if amount < MIN_REFUND_AMOUNT:
+        return False, f"Amount must be at least ${MIN_REFUND_AMOUNT}", None
+
+    if amount > MAX_REFUND_AMOUNT:
+        return False, f"Amount cannot exceed ${MAX_REFUND_AMOUNT:,.2f}", None
+
+    return True, "", amount
 
 
 class RefundManagementCog(commands.Cog):
@@ -123,12 +159,39 @@ class RefundManagementCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
+        # Validate order ID
         try:
             order_id_int = int(order_id)
+        except ValueError:
+            logger.warning("Invalid order ID | Order: %s | User: %s", order_id, interaction.user.id)
+            await interaction.followup.send(
+                f"Invalid order ID: '{order_id}' must be a number.",
+                ephemeral=True
+            )
+            return
+
+        # Validate refund amount
+        is_valid, error_message, validated_amount = _validate_refund_amount(amount)
+        if not is_valid:
+            logger.warning(
+                "Invalid refund amount | Order: %s | Amount: %s | User: %s | Error: %s",
+                order_id,
+                amount,
+                interaction.user.id,
+                error_message,
+            )
+            await interaction.followup.send(
+                f"❌ {error_message}",
+                ephemeral=True
+            )
+            return
+
+        # Convert to cents
+        try:
             amount_cents = _usd_to_cents(amount)
             logger.debug("Parsed refund request | Order: %s | Amount: %s cents | User: %s", order_id_int, amount_cents, interaction.user.id)
         except ValueError as e:
-            logger.warning("Invalid refund input | Order: %s | Amount: %s | User: %s | Error: %s", order_id, amount, interaction.user.id, str(e))
+            logger.warning("Failed to convert amount | Order: %s | Amount: %s | User: %s | Error: %s", order_id, amount, interaction.user.id, str(e))
             await interaction.followup.send(
                 f"Invalid input: {e}",
                 ephemeral=True
@@ -293,6 +356,20 @@ class RefundManagementCog(commands.Cog):
 
         await ctx.trigger_typing()
 
+        # Validate refund amount
+        is_valid, error_message, validated_amount = _validate_refund_amount(amount)
+        if not is_valid:
+            logger.warning(
+                "Invalid refund amount for approval | Order: %s | Amount: %s | Staff: %s | Error: %s",
+                order_id,
+                amount,
+                ctx.author.id,
+                error_message,
+            )
+            await ctx.send(f"❌ {error_message}")
+            return
+
+        # Convert to cents
         try:
             amount_cents = _usd_to_cents(amount)
         except ValueError as e:

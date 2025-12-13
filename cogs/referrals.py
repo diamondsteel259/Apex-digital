@@ -22,6 +22,12 @@ class ReferralsCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    def _get_cashback_percent(self) -> float:
+        """Get the configured cashback percentage, defaulting to 0.5% if not configured."""
+        if self.bot.config.referral_settings:
+            return self.bot.config.referral_settings.cashback_percent
+        return 0.5  # Default to 0.5%
+
     def _is_admin(self, member: discord.Member | None) -> bool:
         if member is None:
             return False
@@ -41,6 +47,7 @@ class ReferralsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id
+        cashback_percent = self._get_cashback_percent()
 
         try:
             stats = await self.bot.db.get_referral_stats(user_id)
@@ -48,12 +55,12 @@ class ReferralsCog(commands.Cog):
             embed = create_embed(
                 title="🎁 Your Referral Program",
                 description=(
-                    "Earn 0.5% cashback on all purchases made by users you refer!\n\n"
+                    f"Earn {cashback_percent}% cashback on all purchases made by users you refer!\n\n"
                     f"**Your Referral Code:** `{user_id}`\n\n"
                     "**How it works:**\n"
                     "1. Share your referral code with friends\n"
                     "2. They use `/setref {your_code}` when they join\n"
-                    "3. You earn 0.5% cashback on their purchases\n"
+                    f"3. You earn {cashback_percent}% cashback on their purchases\n"
                     "4. Cashback accumulates and can be paid out by staff"
                 ),
                 color=discord.Color.gold(),
@@ -81,7 +88,7 @@ class ReferralsCog(commands.Cog):
                         f"Your referral code is: `{user_id}`\n\n"
                         "Share this code with friends! They can use `/setref {your_code}` "
                         "to link their account to you.\n\n"
-                        "**You earn 0.5% cashback on all their purchases!**"
+                        f"**You earn {cashback_percent}% cashback on all their purchases!**"
                     ),
                     color=discord.Color.gold(),
                 )
@@ -250,6 +257,7 @@ class ReferralsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id
+        cashback_percent = self._get_cashback_percent()
 
         try:
             referrer_id = int(referrer_code.strip())
@@ -292,7 +300,7 @@ class ReferralsCog(commands.Cog):
                 title="✅ Referral Link Created",
                 description=(
                     f"You have been successfully referred by <@{referrer_id}>!\n\n"
-                    "They will earn 0.5% cashback on all your purchases. "
+                    f"They will earn {cashback_percent}% cashback on all your purchases. "
                     "Thank you for supporting them!"
                 ),
                 color=discord.Color.green(),
@@ -308,7 +316,7 @@ class ReferralsCog(commands.Cog):
                         title="🎉 New Referral!",
                         description=(
                             f"{interaction.user.mention} ({interaction.user.name}) has joined using your referral code!\n\n"
-                            "You will now earn 0.5% cashback on all their purchases."
+                            f"You will now earn {cashback_percent}% cashback on all their purchases."
                         ),
                         color=discord.Color.gold(),
                     )
@@ -322,7 +330,7 @@ class ReferralsCog(commands.Cog):
                     title="✅ Referral Confirmed",
                     description=(
                         f"You were invited by {referrer_user.name if referrer_user else f'User {referrer_id}'}!\n\n"
-                        "They will earn 0.5% cashback on your purchases. "
+                        f"They will earn {cashback_percent}% cashback on your purchases. "
                         "Enjoy shopping at Apex Core!"
                     ),
                     color=discord.Color.green(),

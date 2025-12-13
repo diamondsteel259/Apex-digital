@@ -47,6 +47,11 @@ class RefundSettings:
 
 
 @dataclass(frozen=True)
+class ReferralSettings:
+    cashback_percent: float
+
+
+@dataclass(frozen=True)
 class RateLimitRule:
     cooldown: int
     max_uses: int
@@ -136,6 +141,7 @@ class Config:
     logging_channels: LoggingChannels
     payment_settings: PaymentSettings | None = None
     refund_settings: RefundSettings | None = None
+    referral_settings: ReferralSettings | None = None
     rate_limits: dict[str, RateLimitRule] = field(default_factory=dict)
     financial_cooldowns: dict[str, int] = field(default_factory=dict)
     roles: list[Role] = field(default_factory=list)
@@ -236,7 +242,7 @@ def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | N
     """Parse refund settings from config payload."""
     if not payload:
         return None
-    
+
     # Validate enabled flag
     enabled = bool(payload.get("enabled", True))
 
@@ -246,7 +252,7 @@ def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | N
         max_days = int(raw_max_days)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"refund_settings.max_days must be an integer (got {raw_max_days!r})") from exc
-    
+
     if not 0 <= max_days <= 365:
         raise ValueError(f"refund_settings.max_days must be between 0 and 365 (got {max_days})")
 
@@ -256,15 +262,33 @@ def _parse_refund_settings(payload: dict[str, Any] | None) -> RefundSettings | N
         handling_fee_percent = float(raw_fee)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"refund_settings.handling_fee_percent must be a number (got {raw_fee!r})") from exc
-        
+
     if not 0 <= handling_fee_percent <= 100:
         raise ValueError(f"refund_settings.handling_fee_percent must be between 0 and 100 (got {handling_fee_percent})")
-    
+
     return RefundSettings(
         enabled=enabled,
         max_days=max_days,
         handling_fee_percent=handling_fee_percent,
     )
+
+
+def _parse_referral_settings(payload: dict[str, Any] | None) -> ReferralSettings | None:
+    """Parse referral settings from config payload."""
+    if not payload:
+        return None
+
+    # Validate cashback_percent
+    raw_cashback = payload.get("cashback_percent", 0.5)
+    try:
+        cashback_percent = float(raw_cashback)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"referral_settings.cashback_percent must be a number (got {raw_cashback!r})") from exc
+
+    if not 0 <= cashback_percent <= 100:
+        raise ValueError(f"referral_settings.cashback_percent must be between 0 and 100 (got {cashback_percent})")
+
+    return ReferralSettings(cashback_percent=cashback_percent)
 
 
 def _parse_rate_limits(payload: dict[str, Any] | None) -> dict[str, RateLimitRule]:
@@ -449,6 +473,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         payment_methods=_parse_payment_methods(data.get("payment_methods", [])),
         payment_settings=payment_settings,
         refund_settings=_parse_refund_settings(data.get("refund_settings")),
+        referral_settings=_parse_referral_settings(data.get("referral_settings")),
         rate_limits=_parse_rate_limits(data.get("rate_limits")),
         financial_cooldowns=_parse_financial_cooldowns(data.get("financial_cooldowns")),
         roles=_parse_roles(data.get("roles", [])),

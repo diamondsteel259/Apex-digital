@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from apex_core import load_config, load_payment_settings, Database, TranscriptStorage
 from apex_core.logger import setup_logger
@@ -135,9 +135,39 @@ class ApexCoreBot(commands.Bot):
         logger.info("Apex Core is ready!")
 
     async def close(self):
+        # Cancel background tasks
+        if cleanup_expired_sessions_task.is_running():
+            cleanup_expired_sessions_task.cancel()
+            logger.info("Background tasks cancelled.")
+
         await self.db.close()
         logger.info("Database connection closed.")
         await super().close()
+
+
+# Background Tasks
+@tasks.loop(hours=1.0)
+async def cleanup_expired_sessions_task():
+    """
+    Cleanup expired setup wizard sessions every hour.
+
+    Removes sessions older than their configured timeout to prevent database bloat.
+    """
+    try:
+        # Get the bot instance from the task
+        bot = cleanup_expired_sessions_task.bot
+        count = await bot.db.cleanup_expired_sessions()
+        if count > 0:
+            logger.info(f"Cleaned up {count} expired setup wizard session(s)")
+    except Exception as error:
+        logger.error(f"Failed to cleanup expired sessions: {error}", exc_info=True)
+
+
+@cleanup_expired_sessions_task.before_loop
+async def before_cleanup_task():
+    """Wait for bot to be ready before starting cleanup task."""
+    bot = cleanup_expired_sessions_task.bot
+    await bot.wait_until_ready()
 
 
 async def main():
@@ -182,6 +212,11 @@ async def main():
         intents=intents,
         config=config
     )
+
+    # Start background tasks
+    cleanup_expired_sessions_task.bot = bot
+    cleanup_expired_sessions_task.start()
+    logger.info("Started background cleanup tasks")
 
     async with bot:
         await bot.start(config.token)

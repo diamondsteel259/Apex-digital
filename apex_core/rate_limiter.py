@@ -15,7 +15,13 @@ import discord
 from discord.ext import commands
 
 from apex_core.config import RateLimitRule
+from apex_core.constants import (
+    RATE_LIMIT_ALERT_COOLDOWN_SECONDS,
+    RATE_LIMIT_ALERT_THRESHOLD,
+    RATE_LIMIT_ALERT_WINDOW_SECONDS,
+)
 from apex_core.logger import get_logger
+from apex_core.utils.permissions import is_admin_from_bot
 
 logger = get_logger()
 
@@ -80,9 +86,9 @@ class RateLimiter:
         self._buckets: dict[str, RateLimitBucket] = {}
         self._violation_history: dict[tuple[int, str], deque[float]] = {}
         self._violation_lock = asyncio.Lock()
-        self.alert_threshold = 3  # Violations before alerting staff
-        self.alert_window = 300   # Seconds to keep violation history (5 minutes)
-        self.alert_cooldown = 600 # Minimum seconds between staff alerts per user/command
+        self.alert_threshold = RATE_LIMIT_ALERT_THRESHOLD
+        self.alert_window = RATE_LIMIT_ALERT_WINDOW_SECONDS
+        self.alert_cooldown = RATE_LIMIT_ALERT_COOLDOWN_SECONDS
         self._last_alert: dict[tuple[int, str], float] = {}
 
     def _bucket_key(self, command_key: str, scope: RateLimitScope, identifier: int) -> str:
@@ -191,21 +197,6 @@ def _build_violation_message(remaining_seconds: int, remaining_uses: int, settin
     ).format(time=time_str, attempts=attempts_text)
 
 
-def _is_admin(user: discord.abc.User, guild: Optional[discord.Guild], bot: commands.Bot | None) -> bool:
-    if not guild or not bot or not getattr(bot, "config", None):
-        return False
-
-    admin_role_id = getattr(bot.config.role_ids, "admin", None)
-    if not admin_role_id:
-        return False
-
-    member = guild.get_member(user.id)
-    if not member:
-        return False
-
-    return any(role.id == admin_role_id for role in getattr(member, "roles", []))
-
-
 def _get_scope_identifier(
     scope: RateLimitScope,
     user: discord.abc.User,
@@ -298,7 +289,7 @@ def rate_limit(
 
             identifier = _get_scope_identifier(settings.scope, user, channel, guild)
 
-            if admin_bypass and _is_admin(user, guild, bot):
+            if admin_bypass and is_admin_from_bot(user, guild, bot):
                 logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
                 await _send_audit_log(
                     bot=bot,
@@ -396,7 +387,7 @@ async def enforce_interaction_rate_limit(
 
     identifier = _get_scope_identifier(settings.scope, user, channel, guild)
 
-    if admin_bypass and _is_admin(user, guild, bot):
+    if admin_bypass and is_admin_from_bot(user, guild, bot):
         logger.info("Admin %s bypassed rate limit for %s (scope=%s, id=%s)", user.id, settings.key, settings.scope, identifier)
         await _send_audit_log(
             bot=bot,
