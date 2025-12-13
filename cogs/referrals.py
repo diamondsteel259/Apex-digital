@@ -13,7 +13,9 @@ from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 class ReferralsCog(commands.Cog):
@@ -35,6 +37,7 @@ class ReferralsCog(commands.Cog):
 
     @app_commands.command(name="invite", description="Get your referral link and earn cashback on referrals.")
     async def invite(self, interaction: discord.Interaction) -> None:
+        logger.info("Command: /invite | User: %s", interaction.user.id)
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         user_id = interaction.user.id

@@ -19,7 +19,9 @@ from apex_core.utils import (
 )
 from apex_core.config import PaymentMethod
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 def _validate_payment_method(method: Any) -> tuple[bool, str]:
@@ -690,6 +692,24 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 old_balance,
                 new_balance,
             )
+            
+            # Log to wallet channel
+            if hasattr(bot.config, 'logging_channels'):
+                wallet_log_id = getattr(bot.config.logging_channels, 'wallet', None)
+                if wallet_log_id:
+                    wallet_channel = interaction.guild.get_channel(wallet_log_id)
+                    if isinstance(wallet_channel, discord.TextChannel):
+                        try:
+                            await wallet_channel.send(
+                                f"💰 **Wallet Payment**\n"
+                                f"User: {interaction.user.mention}\n"
+                                f"Product: {product_name}\n"
+                                f"Amount: {format_usd(self.final_price_cents)}\n"
+                                f"New Balance: {format_usd(new_balance)}\n"
+                                f"Order ID: {order_id}"
+                            )
+                        except Exception as e:
+                            logger.error("Failed to log wallet payment to channel: %s", e)
             
             success_embed = create_embed(
                 title="Payment Confirmed!",

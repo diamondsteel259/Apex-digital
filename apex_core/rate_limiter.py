@@ -15,8 +15,9 @@ import discord
 from discord.ext import commands
 
 from apex_core.config import RateLimitRule
+from apex_core.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 F = TypeVar("F", bound=Callable[..., Any])
 RateLimitScope = Literal["user", "channel", "guild"]

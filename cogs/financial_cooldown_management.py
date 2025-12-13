@@ -12,7 +12,9 @@ from discord.ext import commands
 from apex_core.financial_cooldown_manager import get_financial_cooldown_manager
 from apex_core.utils import create_embed
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 class FinancialCooldownManagementCog(commands.Cog):
@@ -53,6 +55,7 @@ class FinancialCooldownManagementCog(commands.Cog):
         If no user is specified, checks your own cooldowns.
         """
         target_member = member or ctx.author
+        logger.info("Command: !cooldown-check | User: %s | Target: %s", ctx.author.id, target_member.id)
         
         manager = get_financial_cooldown_manager()
         cooldowns = await manager.get_all_user_cooldowns(target_member.id)
@@ -105,6 +108,7 @@ class FinancialCooldownManagementCog(commands.Cog):
         !cooldown-reset @user submitrefund
         !cooldown-reset @user balance
         """
+        logger.info("Command: !cooldown-reset | User: %s | Target: %s | Command: %s", ctx.author.id, member.id, command)
         manager = get_financial_cooldown_manager()
         
         # Check if cooldown exists
@@ -163,6 +167,7 @@ class FinancialCooldownManagementCog(commands.Cog):
     @commands.guild_only()
     async def cooldown_cleanup(self, ctx: commands.Context) -> None:
         """Clean up all expired cooldowns from memory."""
+        logger.info("Command: !cooldown-cleanup | User: %s", ctx.author.id)
         manager = get_financial_cooldown_manager()
         cleaned_count = await manager.cleanup_expired()
         

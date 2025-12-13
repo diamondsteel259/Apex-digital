@@ -17,7 +17,9 @@ from apex_core.utils import create_embed, format_usd
 if TYPE_CHECKING:
     from bot import ApexCoreBot
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 def _cents_to_usd(cents: int) -> str:
@@ -281,6 +283,10 @@ class RefundManagementCog(commands.Cog):
         
         Usage: !refund-approve @user order_id amount [reason]
         """
+        logger.info(
+            "Command: !refund-approve | User: %s | Order: %s | Amount: %s | Staff: %s",
+            user.id, order_id, amount, ctx.author.id
+        )
         if not self.refund_settings.enabled:
             await ctx.send("Refund system is currently disabled.")
             return
@@ -404,6 +410,10 @@ class RefundManagementCog(commands.Cog):
         
         Usage: !refund-reject @user order_id reason
         """
+        logger.info(
+            "Command: !refund-reject | User: %s | Order: %s | Staff: %s | Reason: %s",
+            user.id, order_id, ctx.author.id, reason
+        )
         if not self.refund_settings.enabled:
             await ctx.send("Refund system is currently disabled.")
             return

@@ -385,6 +385,20 @@ def get_apex_core_blueprint() -> ServerBlueprint:
                         },
                     },
                 ),
+                ChannelBlueprint(
+                    name="wallet-log",
+                    channel_type="text",
+                    topic="💰 Wallet transactions and balance changes",
+                    overwrites={
+                        "@everyone": {
+                            "view_channel": False,
+                        },
+                        "Apex Staff": {
+                            "view_channel": True,
+                            "send_messages": False,
+                        },
+                    },
+                ),
             ],
             position=4,
         ),

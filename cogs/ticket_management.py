@@ -161,23 +161,33 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
             )
             return
 
+        # Attempt to cast/resolve bot to ApexCoreBot if it looks like a generic Client
+        if not hasattr(bot, "config") and hasattr(client, "config"):
+             bot = client
+
         missing_attrs = [
             attr for attr in ("config", "db", "get_cog") if not hasattr(bot, attr)
         ]
         if missing_attrs:
-            logger.error(
-                "Invalid bot client for ticket modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
-                interaction.user.id,
-                type(bot).__name__,
-                type(bot).__module__,
-                missing_attrs,
-                type(client).__name__,
-                type(client).__module__,
-            )
-            await interaction.response.send_message(
-                "An error occurred. Please try again.", ephemeral=True
-            )
-            return
+            # Try to recover if we have a valid bot instance elsewhere
+            if hasattr(interaction.client, "config") and hasattr(interaction.client, "db"):
+                 bot = interaction.client
+                 missing_attrs = []
+            
+            if missing_attrs:
+                logger.error(
+                    "Invalid bot client for ticket modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
+                    interaction.user.id,
+                    type(bot).__name__,
+                    type(bot).__module__,
+                    missing_attrs,
+                    type(client).__name__,
+                    type(client).__module__,
+                )
+                await interaction.response.send_message(
+                    "An error occurred. Please try again.", ephemeral=True
+                )
+                return
 
         logger.debug(
             "Ticket modal bot resolved | User: %s | bot_type=%s | bot_module=%s",
@@ -225,6 +235,9 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
             
             admin_role_id = bot.config.role_ids.admin
             admin_role = interaction.guild.get_role(admin_role_id)
+
+            if not admin_role:
+                logger.error("Admin role %s not found in guild %s during support ticket creation", admin_role_id, interaction.guild_id)
             
             member = interaction.user
             if not isinstance(member, discord.Member):
@@ -274,6 +287,7 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
             content = f"{interaction.user.mention}"
             if admin_role:
                 content = f"{admin_role.mention} {content}"
+                logger.info("Pinging admin role %s in ticket channel %s | Ticket #%s", admin_role.name, channel.name, ticket_id)
             
             await channel.send(content=content, embed=embed)
             
@@ -401,23 +415,33 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
             )
             return
 
+        # Attempt to cast/resolve bot to ApexCoreBot if it looks like a generic Client
+        if not hasattr(bot, "config") and hasattr(client, "config"):
+             bot = client
+
         missing_attrs = [
             attr for attr in ("config", "db", "get_cog") if not hasattr(bot, attr)
         ]
         if missing_attrs:
-            logger.error(
-                "Invalid bot client for refund modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
-                interaction.user.id,
-                type(bot).__name__,
-                type(bot).__module__,
-                missing_attrs,
-                type(client).__name__,
-                type(client).__module__,
-            )
-            await interaction.response.send_message(
-                "An error occurred. Please try again.", ephemeral=True
-            )
-            return
+            # Try to recover if we have a valid bot instance elsewhere
+            if hasattr(interaction.client, "config") and hasattr(interaction.client, "db"):
+                 bot = interaction.client
+                 missing_attrs = []
+            
+            if missing_attrs:
+                logger.error(
+                    "Invalid bot client for refund modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
+                    interaction.user.id,
+                    type(bot).__name__,
+                    type(bot).__module__,
+                    missing_attrs,
+                    type(client).__name__,
+                    type(client).__module__,
+                )
+                await interaction.response.send_message(
+                    "An error occurred. Please try again.", ephemeral=True
+                )
+                return
 
         logger.debug(
             "Refund modal bot resolved | User: %s | bot_type=%s | bot_module=%s",
@@ -478,6 +502,9 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
             
             admin_role_id = bot.config.role_ids.admin
             admin_role = interaction.guild.get_role(admin_role_id)
+
+            if not admin_role:
+                logger.error("Admin role %s not found in guild %s during refund ticket creation", admin_role_id, interaction.guild_id)
             
             member = interaction.user
             if not isinstance(member, discord.Member):
@@ -542,6 +569,7 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
             content = f"{interaction.user.mention}"
             if admin_role:
                 content = f"{admin_role.mention} {content}"
+                logger.info("Pinging admin role %s in ticket channel %s | Ticket #%s", admin_role.name, channel.name, ticket_id)
             
             await channel.send(content=content, embed=embed)
             

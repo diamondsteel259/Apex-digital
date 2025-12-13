@@ -12,7 +12,9 @@ from apex_core.financial_cooldown_manager import financial_cooldown
 from apex_core.rate_limiter import rate_limit
 from apex_core.utils import create_embed, format_usd
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 class OrdersCog(commands.Cog):
@@ -260,6 +262,13 @@ class OrdersCog(commands.Cog):
         member: Optional[discord.Member] = None,
         page: int = 1,
     ) -> None:
+        logger.info(
+            "Command: /transactions | Target: %s | Page: %s | User: %s (%s)",
+            member.name if member else "self",
+            page,
+            interaction.user.name,
+            interaction.user.id,
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
@@ -381,6 +390,13 @@ class OrdersCog(commands.Cog):
         order_id: int,
         status: str,
     ) -> None:
+        logger.info(
+            "Command: /order-status | Order: %s | Status: %s | User: %s (%s)",
+            order_id,
+            status,
+            interaction.user.name,
+            interaction.user.id,
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
@@ -442,6 +458,13 @@ class OrdersCog(commands.Cog):
         order_id: int,
         days: int,
     ) -> None:
+        logger.info(
+            "Command: /renew-warranty | Order: %s | Days: %s | User: %s (%s)",
+            order_id,
+            days,
+            interaction.user.name,
+            interaction.user.id,
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
