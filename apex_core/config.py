@@ -87,6 +87,14 @@ class RoleIDs:
     apex_staff: int | None = None
     apex_client: int | None = None
     apex_insider: int | None = None
+    client: int | None = None
+    apex_vip: int | None = None
+    apex_elite: int | None = None
+    apex_legend: int | None = None
+    apex_sovereign: int | None = None
+    apex_donor: int | None = None
+    legendary_donor: int | None = None
+    apex_zenith: int | None = None
     data: dict[str, int] = field(default_factory=dict)
 
 

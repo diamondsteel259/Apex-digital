@@ -2985,9 +2985,12 @@ class SetupCog(commands.Cog):
         blueprint = get_apex_core_blueprint()
         
         # Analyze current state
-        current_roles = {role.name: role for role in guild.roles if role.name in [
-            "Apex Staff", "Apex Client", "Apex Insider"
-        ]}
+        blueprint_role_names = {role_bp.name for role_bp in blueprint.roles}
+        current_roles = {
+            role.name: role
+            for role in guild.roles
+            if role.name in blueprint_role_names
+        }
         
         current_categories = {cat.name: cat for cat in guild.categories if any(
             blueprint_cat.name == cat.name for blueprint_cat in blueprint.categories
