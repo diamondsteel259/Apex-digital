@@ -50,6 +50,13 @@ class TicketPanelView(discord.ui.View):
     async def general_support_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        logger.info(
+            "General support button clicked | User: %s (%s) | Guild: %s | Channel: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
         await interaction.response.send_modal(GeneralSupportModal())
     
     @discord.ui.button(
@@ -61,6 +68,13 @@ class TicketPanelView(discord.ui.View):
     async def refund_support_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        logger.info(
+            "Refund support button clicked | User: %s (%s) | Guild: %s | Channel: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
         await interaction.response.send_modal(RefundSupportModal())
 
 
@@ -115,7 +129,16 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
     async def on_submit(self, interaction: discord.Interaction) -> None:
         from bot import ApexCoreBot
         
+        logger.info(
+            "General support modal submitted | User: %s (%s) | Guild: %s | Description: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            self.description.value[:100],  # Log first 100 chars
+        )
+        
         if not isinstance(interaction.client, ApexCoreBot):
+            logger.error("Invalid bot client type for ticket modal | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "An error occurred. Please try again.", ephemeral=True
             )
@@ -124,6 +147,7 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
         bot: ApexCoreBot = interaction.client
         
         if interaction.guild is None:
+            logger.warning("Ticket modal submitted outside guild | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "This must be used in a server.", ephemeral=True
             )
@@ -136,33 +160,37 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
         category = interaction.guild.get_channel(category_id)
         
         if not isinstance(category, discord.CategoryChannel):
+            logger.error("Support category not found or wrong type: %s | Guild: %s", category_id, interaction.guild_id)
             await interaction.followup.send(
                 "Unable to create ticket: support category not found.",
                 ephemeral=True
             )
-            logger.error("Support category %s not found", category_id)
             return
+        
+        logger.debug("Support category found: %s | User: %s", category.name, user_id)
         
         try:
             cog = bot.get_cog("TicketManagementCog")
             if not isinstance(cog, TicketManagementCog):
+                logger.error("TicketManagementCog not loaded | User: %s", user_id)
                 await interaction.followup.send(
                     "Ticket system is not available.", ephemeral=True
                 )
                 return
             
             channel_name = cog._generate_channel_name(interaction.user.name, "support")
+            logger.debug("Generated channel name: %s | User: %s", channel_name, user_id)
             
             admin_role_id = bot.config.role_ids.admin
             admin_role = interaction.guild.get_role(admin_role_id)
             
             member = interaction.user
             if not isinstance(member, discord.Member):
+                logger.error("User is not a member of the guild | User: %s | Guild: %s", user_id, interaction.guild_id)
                 await interaction.followup.send(
                     "Failed to create ticket. Please try again.",
                     ephemeral=True
                 )
-                logger.error("User is not a member of the guild")
                 return
             
             overwrites = self._build_ticket_channel_overwrites(
@@ -171,12 +199,14 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 member,
             )
             
+            logger.info("Creating ticket channel: %s | User: %s | Guild: %s", channel_name, user_id, interaction.guild_id)
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
                 overwrites=overwrites,
                 reason=f"General support ticket for {interaction.user.name}",
             )
+            logger.info("Ticket channel created successfully: %s (ID: %s) | User: %s", channel.name, channel.id, user_id)
             
             ticket_id = await bot.db.create_ticket(
                 user_discord_id=user_id,
@@ -184,6 +214,7 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 status="open",
                 ticket_type="support",
             )
+            logger.info("Ticket record created in database: #%s | Channel: %s | User: %s", ticket_id, channel.id, user_id)
             
             embed = create_embed(
                 title="General Support Ticket",
@@ -208,14 +239,32 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 f"✅ Support ticket created: {channel.mention}",
                 ephemeral=True
             )
-            logger.info("Created general support ticket #%s (%s) for user %s", ticket_id, channel_name, user_id)
+            logger.info("Support ticket #%s fully set up | Channel: %s | User: %s", ticket_id, channel_name, user_id)
             
         except discord.HTTPException as e:
+            logger.error(
+                "Failed to create ticket channel | User: %s | Guild: %s | Error: %s",
+                user_id,
+                interaction.guild_id,
+                str(e),
+                exc_info=True,
+            )
             await interaction.followup.send(
                 "Failed to create ticket. Please try again.",
                 ephemeral=True
             )
-            logger.error("Failed to create ticket channel: %s", e)
+        except Exception as e:
+            logger.error(
+                "Unexpected error creating ticket | User: %s | Guild: %s | Error: %s",
+                user_id,
+                interaction.guild_id,
+                str(e),
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                "An unexpected error occurred. Please contact support.",
+                ephemeral=True,
+            )
 
 
 class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):

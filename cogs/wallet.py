@@ -191,7 +191,16 @@ class WalletCog(commands.Cog):
 
     @app_commands.command(name="deposit", description="Open a private deposit ticket with staff.")
     async def deposit(self, interaction: discord.Interaction) -> None:
+        logger.info(
+            "Command: /deposit | User: %s (%s) | Guild: %s | Channel: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        
         if interaction.guild is None:
+            logger.warning("Deposit command used outside guild | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "This command can only be used inside a server.", ephemeral=True
             )
@@ -199,6 +208,7 @@ class WalletCog(commands.Cog):
 
         member = self._resolve_member(interaction)
         if member is None:
+            logger.error("Failed to resolve member for deposit | User: %s | Guild: %s", interaction.user.id, interaction.guild_id)
             await interaction.response.send_message(
                 "Unable to resolve your member profile. Please try again.", ephemeral=True
             )
@@ -206,13 +216,16 @@ class WalletCog(commands.Cog):
 
         payment_methods = self._get_payment_methods()
         if not payment_methods:
-            logger.error("Deposit command blocked: No payment methods configured.")
+            logger.error("Deposit command blocked: No payment methods configured | Guild: %s", interaction.guild_id)
             await interaction.response.send_message(
                 "Deposit methods are not configured. Please contact staff.", ephemeral=True
             )
             return
 
+        logger.debug("Payment methods available: %s | User: %s", len(payment_methods), interaction.user.id)
         await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        logger.debug("Ensuring user exists in database | User: %s", interaction.user.id)
         await self.bot.db.ensure_user(member.id)
 
         existing_ticket = await self.bot.db.get_open_ticket_for_user(member.id)

@@ -123,7 +123,18 @@ class OrdersCog(commands.Cog):
         member: Optional[discord.Member] = None,
         page: int = 1,
     ) -> None:
+        logger.info(
+            "Command: /orders | Target: %s | Page: %s | User: %s (%s) | Guild: %s | Channel: %s",
+            member.name if member else "self",
+            page,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        
         if interaction.guild is None:
+            logger.warning("Orders command used outside guild | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
             )
@@ -131,6 +142,7 @@ class OrdersCog(commands.Cog):
 
         requester = self._resolve_member(interaction)
         if requester is None:
+            logger.error("Failed to resolve member | User: %s | Guild: %s", interaction.user.id, interaction.guild_id)
             await interaction.response.send_message(
                 "Unable to resolve your member profile.", ephemeral=True
             )
@@ -138,6 +150,7 @@ class OrdersCog(commands.Cog):
 
         target = member or requester
         if member and not self._is_admin(requester):
+            logger.warning("Non-admin attempted to view other's orders | Requester: %s | Target: %s", requester.id, member.id)
             await interaction.response.send_message(
                 "Only admins can view other members' orders.", ephemeral=True
             )
@@ -151,12 +164,15 @@ class OrdersCog(commands.Cog):
         per_page = 10
         offset = (page - 1) * per_page
 
+        logger.debug("Fetching orders | User: %s | Page: %s | Offset: %s", target.id, page, offset)
         orders = await self.bot.db.get_orders_for_user(
             target.id, limit=per_page, offset=offset
         )
         total_orders = await self.bot.db.count_orders_for_user(target.id)
+        logger.debug("Orders fetched | User: %s | Count: %s | Total: %s", target.id, len(orders), total_orders)
 
         if not orders:
+            logger.info("No orders found | User: %s | Page: %s", target.id, page)
             if page == 1:
                 await interaction.followup.send(
                     f"No orders found for {target.mention}.", ephemeral=True

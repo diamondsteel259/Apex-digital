@@ -101,7 +101,18 @@ class RefundManagementCog(commands.Cog):
         reason: str,
     ) -> None:
         """Submit a refund request for an order."""
+        logger.info(
+            "Command: /submitrefund | Order: %s | Amount: %s | User: %s (%s) | Guild: %s | Reason: %s",
+            order_id,
+            amount,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            reason[:100],  # First 100 chars
+        )
+        
         if not self.refund_settings.enabled:
+            logger.warning("Refund system disabled | User: %s attempted submitrefund", interaction.user.id)
             await interaction.response.send_message(
                 "Refund system is currently disabled.",
                 ephemeral=True
@@ -113,7 +124,9 @@ class RefundManagementCog(commands.Cog):
         try:
             order_id_int = int(order_id)
             amount_cents = _usd_to_cents(amount)
+            logger.debug("Parsed refund request | Order: %s | Amount: %s cents | User: %s", order_id_int, amount_cents, interaction.user.id)
         except ValueError as e:
+            logger.warning("Invalid refund input | Order: %s | Amount: %s | User: %s | Error: %s", order_id, amount, interaction.user.id, str(e))
             await interaction.followup.send(
                 f"Invalid input: {e}",
                 ephemeral=True
@@ -121,6 +134,7 @@ class RefundManagementCog(commands.Cog):
             return
 
         # Validate order belongs to user and is within refund window
+        logger.debug("Validating order for refund | Order: %s | User: %s | Max days: %s", order_id_int, interaction.user.id, self.refund_settings.max_days)
         order = await self.bot.db.validate_order_for_refund(
             order_id_int,
             interaction.user.id,
@@ -128,15 +142,30 @@ class RefundManagementCog(commands.Cog):
         )
 
         if not order:
+            logger.warning(
+                "Order not eligible for refund | Order: %s | User: %s | Max days: %s",
+                order_id_int,
+                interaction.user.id,
+                self.refund_settings.max_days,
+            )
             await interaction.followup.send(
                 f"Order #{order_id} not found, not eligible for refund, or outside the {self.refund_settings.max_days}-day window. "
                 "Only fulfilled or refill orders within the refund period are eligible.",
                 ephemeral=True
             )
             return
+        
+        logger.debug("Order validated for refund | Order: %s | User: %s", order_id_int, interaction.user.id)
 
         # Create refund request
         try:
+            logger.info(
+                "Creating refund request | Order: %s | User: %s | Amount: %s cents | Handling fee: %s%%",
+                order_id_int,
+                interaction.user.id,
+                amount_cents,
+                self.refund_settings.handling_fee_percent,
+            )
             refund_id = await self.bot.db.create_refund_request(
                 order_id=order_id_int,
                 user_discord_id=interaction.user.id,
@@ -144,10 +173,12 @@ class RefundManagementCog(commands.Cog):
                 reason=reason,
                 handling_fee_percent=self.refund_settings.handling_fee_percent,
             )
+            logger.info("Refund request created | Refund ID: %s | Order: %s | User: %s", refund_id, order_id_int, interaction.user.id)
 
             # Get refund details for confirmation
             refund = await self.bot.db.get_refund_by_id(refund_id)
             if not refund:
+                logger.error("Failed to retrieve created refund | Refund ID: %s | User: %s", refund_id, interaction.user.id)
                 raise RuntimeError("Failed to retrieve created refund")
 
             # Send confirmation to user
