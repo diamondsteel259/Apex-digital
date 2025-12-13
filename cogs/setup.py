@@ -759,20 +759,45 @@ class SetupCog(commands.Cog):
             del self.user_states[user_id]
             logger.info(f"Cleaned up wizard state for user {user_id}: {reason}")
 
-    async def _cleanup_setup_session(self, guild_id: int, user_id: int, reason: str) -> None:
-        """Clean up setup session and rollback any incomplete operations."""
+    async def _cleanup_setup_session(
+        self,
+        guild_id: int,
+        user_id: int,
+        reason: str,
+        *,
+        execute_rollback: bool = True,
+    ) -> None:
+        """Clean up a setup session.
+
+        Rollback should only be executed when a session is being abandoned/failed.
+        Successful completion paths should call this with execute_rollback=False.
+        """
         session_key = self._get_session_key(guild_id, user_id)
-        
+
         if session_key in self.setup_sessions:
             session = self.setup_sessions[session_key]
-            
-            # Rollback any incomplete operations
-            if session.rollback_stack:
-                await self._execute_rollback_stack(session.rollback_stack, f"Session cleanup: {reason}")
-            
-            # Remove session
+
+            if execute_rollback and session.rollback_stack:
+                await self._execute_rollback_stack(
+                    session.rollback_stack, f"Session cleanup: {reason}"
+                )
+
             del self.setup_sessions[session_key]
-            logger.info(f"Cleaned up setup session for guild {guild_id}, user {user_id}: {reason}")
+            logger.info(
+                f"Cleaned up setup session for guild {guild_id}, user {user_id}: {reason}"
+            )
+
+        # Remove persisted session record (best-effort)
+        try:
+            if hasattr(self.bot, "db") and hasattr(self.bot.db, "delete_setup_session"):
+                result = self.bot.db.delete_setup_session(guild_id, user_id)
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as e:
+            logger.error(
+                f"Failed to delete setup session from database for guild {guild_id}, user {user_id}: {e}",
+                exc_info=True,
+            )
 
     async def _cleanup_expired_states(self) -> None:
         """Clean up expired wizard states and setup sessions."""
@@ -1134,11 +1159,15 @@ class SetupCog(commands.Cog):
                 else:
                     issues.append("Message missing embed")
                     
-                # Check that the message has a view (components)
+                # Check for interactive components only when expected
+                expects_components = panel_type in {"products", "support"}
                 if fetched_message.components:
                     checks_performed.append("✅ Message has interactive components")
                 else:
-                    issues.append("Message missing interactive components")
+                    if expects_components:
+                        issues.append("Message missing interactive components")
+                    else:
+                        checks_performed.append("ℹ️ No interactive components (info-only panel)")
                     
             except discord.NotFound:
                 issues.append("Message not found in channel")
@@ -1589,24 +1618,38 @@ class SetupCog(commands.Cog):
         try:
             # Execute full server provisioning
             await self._execute_full_server_provisioning(interaction, session)
-            
+
         except SetupOperationError as e:
             error_msg = e.format_for_user(is_slash=True)
             await interaction.followup.send(
                 f"❌ **Full Server Setup Failed**\n\n{error_msg}",
-                ephemeral=True
+                ephemeral=True,
             )
             logger.error(f"Full server setup failed for guild {interaction.guild.id}: {e}")
+
         except Exception as e:
             await interaction.followup.send(
                 f"❌ **Unexpected Error**\n\n"
                 f"An unexpected error occurred during full server setup.\n"
                 f"All changes have been rolled back.\n\n"
                 f"💡 **Suggestion:** Try again or contact an administrator.",
-                ephemeral=True
+                ephemeral=True,
             )
-            logger.error(f"Unexpected error in full server setup for guild {interaction.guild.id}: {e}", exc_info=True)
-    
+            logger.error(
+                f"Unexpected error in full server setup for guild {interaction.guild.id}: {e}",
+                exc_info=True,
+            )
+
+        finally:
+            # If provisioning raised, it already executed rollback. Ensure session is cleared.
+            if session_key in self.setup_sessions:
+                await self._cleanup_setup_session(
+                    interaction.guild.id,
+                    interaction.user.id,
+                    "Full server setup ended",
+                    execute_rollback=False,
+                )
+
     async def _execute_full_server_provisioning(
         self, interaction: discord.Interaction, session: SetupSession
     ) -> None:
@@ -1795,11 +1838,12 @@ class SetupCog(commands.Cog):
                 logger.error(f"Failed to persist provisioned IDs: {e}")
                 # Don't fail the entire operation for config issues
             
-            # Clean up session
+            # Clean up session (success path - do not rollback)
             await self._cleanup_setup_session(
                 session.guild_id,
                 session.user_id,
-                "Full server setup completed"
+                "Full server setup completed",
+                execute_rollback=False,
             )
             
         except Exception as e:
@@ -2278,11 +2322,12 @@ class SetupCog(commands.Cog):
                     "🎉 All panels deployed successfully!",
                     ephemeral=True,
                 )
-                # Clean up session
+                # Clean up session (success path - do not rollback)
                 await self._cleanup_setup_session(
-                    session.guild_id, 
-                    session.user_id, 
-                    "Setup completed successfully"
+                    session.guild_id,
+                    session.user_id,
+                    "Setup completed successfully",
+                    execute_rollback=False,
                 )
 
         except SetupOperationError as e:
@@ -2481,12 +2526,13 @@ class SetupCog(commands.Cog):
                             f"🎉 Setup complete!"
                 )
                 
-                # Clean up session if applicable
+                # Clean up session if applicable (success path - do not rollback)
                 if session:
                     await self._cleanup_setup_session(
                         session.guild_id,
                         session.user_id,
-                        "Setup completed successfully"
+                        "Setup completed successfully",
+                        execute_rollback=False,
                     )
         
         except SetupOperationError as e:
