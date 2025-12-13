@@ -61,6 +61,16 @@ def get_apex_core_blueprint() -> ServerBlueprint:
     """
     
     # Define roles
+    customer_permissions = discord.Permissions(
+        view_channel=True,
+        send_messages=True,
+        embed_links=True,
+        attach_files=True,
+        read_message_history=True,
+        add_reactions=True,
+        use_external_emojis=True,
+    )
+
     roles = [
         RoleBlueprint(
             name="Apex Staff",
@@ -85,15 +95,7 @@ def get_apex_core_blueprint() -> ServerBlueprint:
         RoleBlueprint(
             name="Apex Client",
             color=discord.Color.blue(),
-            permissions=discord.Permissions(
-                view_channel=True,
-                send_messages=True,
-                embed_links=True,
-                attach_files=True,
-                read_message_history=True,
-                add_reactions=True,
-                use_external_emojis=True,
-            ),
+            permissions=customer_permissions,
             hoist=True,
             mentionable=False,
             position=5,
@@ -101,21 +103,69 @@ def get_apex_core_blueprint() -> ServerBlueprint:
         RoleBlueprint(
             name="Apex Insider",
             color=discord.Color.gold(),
-            permissions=discord.Permissions(
-                view_channel=True,
-                send_messages=True,
-                embed_links=True,
-                attach_files=True,
-                read_message_history=True,
-                add_reactions=True,
-                use_external_emojis=True,
-            ),
+            permissions=customer_permissions,
             hoist=True,
             mentionable=False,
             position=4,
         ),
+        RoleBlueprint(
+            name="Client",
+            color=discord.Color.dark_grey(),
+            permissions=customer_permissions,
+            hoist=False,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex VIP",
+            color=discord.Color.purple(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex Elite",
+            color=discord.Color.dark_purple(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex Legend",
+            color=discord.Color.orange(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex Sovereign",
+            color=discord.Color.dark_gold(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex Zenith",
+            color=discord.Color.gold(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Apex Donor",
+            color=discord.Color.magenta(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
+        RoleBlueprint(
+            name="Legendary Donor",
+            color=discord.Color.dark_magenta(),
+            permissions=customer_permissions,
+            hoist=True,
+            mentionable=False,
+        ),
     ]
-    
+
     # Define categories with channels
     categories = [
         # Products Category
@@ -248,6 +298,10 @@ def get_apex_core_blueprint() -> ServerBlueprint:
                             "send_messages": False,
                         },
                         "Apex Client": {
+                            "view_channel": True,
+                            "send_messages": True,
+                        },
+                        "Client": {
                             "view_channel": True,
                             "send_messages": True,
                         },
