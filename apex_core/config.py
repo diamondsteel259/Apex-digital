@@ -84,6 +84,10 @@ class Role:
 @dataclass(frozen=True)
 class RoleIDs:
     admin: int
+    apex_staff: int | None = None
+    apex_client: int | None = None
+    apex_insider: int | None = None
+    data: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
