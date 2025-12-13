@@ -1629,6 +1629,23 @@ class SetupCog(commands.Cog):
         panel_deployments: Dict[str, discord.TextChannel] = {}  # panel_type -> channel
         
         try:
+            # Step 0: Clean up stale panel records before fresh deployment
+            await interaction.followup.send(
+                "🏗️ **Full Server Setup**\n\n"
+                "**Step 0/4:** Cleaning up stale panel records...",
+                ephemeral=True
+            )
+            
+            existing_panels = await self.bot.db.get_deployments(guild.id)
+            cleaned_count = 0
+            
+            for panel in existing_panels:
+                await self.bot.db.remove_panel(panel["id"])
+                cleaned_count += 1
+            
+            if cleaned_count > 0:
+                logger.info(f"Cleaned up {cleaned_count} stale panel records for guild {guild.id}")
+            
             # Step 1: Provision roles
             await interaction.followup.send(
                 "🏗️ **Full Server Setup**\n\n"
@@ -1646,6 +1663,7 @@ class SetupCog(commands.Cog):
             # Step 2: Provision categories and channels
             await interaction.edit_original_response(
                 content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
                         f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
                         f"**Step 2/4:** Provisioning categories and channels..."
             )
@@ -1679,6 +1697,7 @@ class SetupCog(commands.Cog):
             # Step 3: Deploy panels
             await interaction.edit_original_response(
                 content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
                         f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
                         f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
                         f"{len(created_channels)} channels\n"
@@ -1703,6 +1722,7 @@ class SetupCog(commands.Cog):
             # Step 4: Generate audit log
             await interaction.edit_original_response(
                 content="🏗️ **Full Server Setup**\n\n"
+                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
                         f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
                         f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
                         f"{len(created_channels)} channels\n"
