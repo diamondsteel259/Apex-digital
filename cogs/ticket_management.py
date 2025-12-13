@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 import discord
 from discord import app_commands
@@ -57,7 +57,7 @@ class TicketPanelView(discord.ui.View):
             interaction.guild_id,
             interaction.channel_id,
         )
-        await interaction.response.send_modal(GeneralSupportModal())
+        await interaction.response.send_modal(GeneralSupportModal(bot=interaction.client))
     
     @discord.ui.button(
         label="Refund Support",
@@ -75,12 +75,12 @@ class TicketPanelView(discord.ui.View):
             interaction.guild_id,
             interaction.channel_id,
         )
-        await interaction.response.send_modal(RefundSupportModal())
+        await interaction.response.send_modal(RefundSupportModal(bot=interaction.client))
 
 
 class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket"):
     """Modal for collecting general support ticket information."""
-    
+
     description = discord.ui.TextInput(
         label="Description",
         placeholder="Brief description of your issue...",
@@ -88,7 +88,11 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
         required=True,
         max_length=1000,
     )
-    
+
+    def __init__(self, bot: discord.Client | None = None) -> None:
+        super().__init__()
+        self.bot = bot
+
     def _build_ticket_channel_overwrites(
         self,
         guild: discord.Guild,
@@ -96,19 +100,13 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
         member: discord.Member,
     ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
         """Build permission overwrites for a secure ticket channel.
-        
+
         Denies @everyone view/send access while allowing bot, admin, and the member.
         """
-        overwrites = {
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=False,
                 send_messages=False,
-            ),
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                read_message_history=True,
             ),
             member: discord.PermissionOverwrite(
                 view_channel=True,
@@ -116,19 +114,30 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 read_message_history=True,
             ),
         }
-        
+
+        if guild.me is not None:
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            )
+        else:
+            logger.warning(
+                "guild.me is None while building ticket overwrites | Guild: %s",
+                guild.id,
+            )
+
         if admin_role:
             overwrites[admin_role] = discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
                 read_message_history=True,
             )
-        
+
         return overwrites
     
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from bot import ApexCoreBot
-        
         logger.info(
             "General support modal submitted | User: %s (%s) | Guild: %s | Description: %s",
             interaction.user.name,
@@ -136,25 +145,58 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
             interaction.guild_id,
             self.description.value[:100],  # Log first 100 chars
         )
-        
-        if not isinstance(interaction.client, ApexCoreBot):
-            logger.error("Invalid bot client type for ticket modal | User: %s", interaction.user.id)
+
+        bot: Any = self.bot or interaction.client
+        client = interaction.client
+
+        if bot is None:
+            logger.error(
+                "Ticket modal has no bot instance | User: %s | interaction_client_type=%s | interaction_client_module=%s",
+                interaction.user.id,
+                type(client).__name__,
+                type(client).__module__,
+            )
             await interaction.response.send_message(
                 "An error occurred. Please try again.", ephemeral=True
             )
             return
-        
-        bot: ApexCoreBot = interaction.client
-        
+
+        missing_attrs = [
+            attr for attr in ("config", "db", "get_cog") if not hasattr(bot, attr)
+        ]
+        if missing_attrs:
+            logger.error(
+                "Invalid bot client for ticket modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
+                interaction.user.id,
+                type(bot).__name__,
+                type(bot).__module__,
+                missing_attrs,
+                type(client).__name__,
+                type(client).__module__,
+            )
+            await interaction.response.send_message(
+                "An error occurred. Please try again.", ephemeral=True
+            )
+            return
+
+        logger.debug(
+            "Ticket modal bot resolved | User: %s | bot_type=%s | bot_module=%s",
+            interaction.user.id,
+            type(bot).__name__,
+            type(bot).__module__,
+        )
+
         if interaction.guild is None:
-            logger.warning("Ticket modal submitted outside guild | User: %s", interaction.user.id)
+            logger.warning(
+                "Ticket modal submitted outside guild | User: %s", interaction.user.id
+            )
             await interaction.response.send_message(
                 "This must be used in a server.", ephemeral=True
             )
             return
-        
+
         await interaction.response.defer(ephemeral=True, thinking=True)
-        
+
         user_id = interaction.user.id
         category_id = bot.config.ticket_categories.support
         category = interaction.guild.get_channel(category_id)
@@ -269,7 +311,7 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
 
 class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
     """Modal for collecting refund request information."""
-    
+
     order_id = discord.ui.TextInput(
         label="Order ID",
         placeholder="Your order ID number...",
@@ -277,7 +319,7 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
         required=True,
         max_length=50,
     )
-    
+
     reason = discord.ui.TextInput(
         label="Refund Reason",
         placeholder="Reason for your refund request...",
@@ -285,7 +327,11 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
         required=True,
         max_length=1000,
     )
-    
+
+    def __init__(self, bot: discord.Client | None = None) -> None:
+        super().__init__()
+        self.bot = bot
+
     def _build_ticket_channel_overwrites(
         self,
         guild: discord.Guild,
@@ -293,19 +339,13 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
         member: discord.Member,
     ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
         """Build permission overwrites for a secure ticket channel.
-        
+
         Denies @everyone view/send access while allowing bot, admin, and the member.
         """
-        overwrites = {
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=False,
                 send_messages=False,
-            ),
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                read_message_history=True,
             ),
             member: discord.PermissionOverwrite(
                 view_channel=True,
@@ -313,44 +353,96 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
                 read_message_history=True,
             ),
         }
-        
+
+        if guild.me is not None:
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            )
+        else:
+            logger.warning(
+                "guild.me is None while building ticket overwrites | Guild: %s",
+                guild.id,
+            )
+
         if admin_role:
             overwrites[admin_role] = discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
                 read_message_history=True,
             )
-        
+
         return overwrites
     
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from bot import ApexCoreBot
-        
-        if not isinstance(interaction.client, ApexCoreBot):
+        logger.info(
+            "Refund modal submitted | User: %s (%s) | Guild: %s | OrderID: %s | Reason: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            self.order_id.value,
+            self.reason.value[:100],
+        )
+
+        bot: Any = self.bot or interaction.client
+        client = interaction.client
+
+        if bot is None:
+            logger.error(
+                "Refund modal has no bot instance | User: %s | interaction_client_type=%s | interaction_client_module=%s",
+                interaction.user.id,
+                type(client).__name__,
+                type(client).__module__,
+            )
             await interaction.response.send_message(
                 "An error occurred. Please try again.", ephemeral=True
             )
             return
-        
-        bot: ApexCoreBot = interaction.client
-        
+
+        missing_attrs = [
+            attr for attr in ("config", "db", "get_cog") if not hasattr(bot, attr)
+        ]
+        if missing_attrs:
+            logger.error(
+                "Invalid bot client for refund modal | User: %s | bot_type=%s | bot_module=%s | missing=%s | interaction_client_type=%s | interaction_client_module=%s",
+                interaction.user.id,
+                type(bot).__name__,
+                type(bot).__module__,
+                missing_attrs,
+                type(client).__name__,
+                type(client).__module__,
+            )
+            await interaction.response.send_message(
+                "An error occurred. Please try again.", ephemeral=True
+            )
+            return
+
+        logger.debug(
+            "Refund modal bot resolved | User: %s | bot_type=%s | bot_module=%s",
+            interaction.user.id,
+            type(bot).__name__,
+            type(bot).__module__,
+        )
+
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This must be used in a server.", ephemeral=True
             )
             return
-        
+
         await interaction.response.defer(ephemeral=True, thinking=True)
-        
+
         try:
             order_id_int = int(self.order_id.value)
         except ValueError:
             await interaction.followup.send(
                 "Invalid order ID. Please enter a valid number.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-        
+
         user_id = interaction.user.id
         category_id = bot.config.ticket_categories.support
         category = interaction.guild.get_channel(category_id)
@@ -520,19 +612,13 @@ class TicketManagementCog(commands.Cog):
         member: discord.Member,
     ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
         """Build permission overwrites for a secure ticket channel.
-        
+
         Denies @everyone view/send access while allowing bot, admin, and the member.
         """
-        overwrites = {
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=False,
                 send_messages=False,
-            ),
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                read_message_history=True,
             ),
             member: discord.PermissionOverwrite(
                 view_channel=True,
@@ -540,14 +626,27 @@ class TicketManagementCog(commands.Cog):
                 read_message_history=True,
             ),
         }
-        
+
+        if guild.me is not None:
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            )
+        else:
+            logger.warning(
+                "guild.me is None while building ticket overwrites | Guild: %s",
+                guild.id,
+            )
+
         if admin_role:
             overwrites[admin_role] = discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
                 read_message_history=True,
             )
-        
+
         return overwrites
 
     def _resolve_member(self, interaction: discord.Interaction) -> discord.Member | None:
