@@ -1,7 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
+import discord
 from cogs.ticket_management import TicketManagementCog
 
 
@@ -144,3 +146,180 @@ async def test_save_and_retrieve_transcripts(db, user_factory):
     transcript = await db.get_transcript_by_ticket_id(ticket_id)
     assert transcript is not None
     assert transcript["storage_path"] == "transcripts/ticket.html"
+
+
+class TestSecureTicketChannels:
+    """Tests for secure ticket channel creation with permission overwrites."""
+
+    def test_build_ticket_channel_overwrites_denies_everyone(self, ticket_management_cog):
+        """Test that @everyone is denied view_channel and send_messages."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert guild.default_role in overwrites
+        everyone_overwrite = overwrites[guild.default_role]
+        assert everyone_overwrite.view_channel is False
+        assert everyone_overwrite.send_messages is False
+
+    def test_build_ticket_channel_overwrites_allows_bot(self, ticket_management_cog):
+        """Test that the bot has full permissions including message history."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert guild.me in overwrites
+        bot_overwrite = overwrites[guild.me]
+        assert bot_overwrite.view_channel is True
+        assert bot_overwrite.send_messages is True
+        assert bot_overwrite.manage_channels is True
+        assert bot_overwrite.read_message_history is True
+
+    def test_build_ticket_channel_overwrites_allows_admin(self, ticket_management_cog):
+        """Test that the admin role has view/send/read permissions."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert admin_role in overwrites
+        admin_overwrite = overwrites[admin_role]
+        assert admin_overwrite.view_channel is True
+        assert admin_overwrite.send_messages is True
+        assert admin_overwrite.read_message_history is True
+
+    def test_build_ticket_channel_overwrites_allows_member(self, ticket_management_cog):
+        """Test that the requesting member has view/send/read permissions."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert member in overwrites
+        member_overwrite = overwrites[member]
+        assert member_overwrite.view_channel is True
+        assert member_overwrite.send_messages is True
+        assert member_overwrite.read_message_history is True
+
+    def test_build_ticket_channel_overwrites_without_admin_role(self, ticket_management_cog):
+        """Test that overwrites work when admin role is None."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, None, member
+        )
+        
+        assert len(overwrites) == 3
+        assert guild.default_role in overwrites
+        assert guild.me in overwrites
+        assert member in overwrites
+        assert None not in overwrites
+
+    def test_build_ticket_channel_overwrites_has_correct_count(self, ticket_management_cog):
+        """Test that exactly the expected number of overwrites are created."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        overwrites = ticket_management_cog._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert len(overwrites) == 4
+        targets = {guild.default_role, guild.me, admin_role, member}
+        assert set(overwrites.keys()) == targets
+
+
+class TestGeneralSupportModalOverwrites:
+    """Tests for GeneralSupportModal permission overwrites."""
+
+    def test_general_support_modal_has_build_method(self):
+        """Test that GeneralSupportModal has the _build_ticket_channel_overwrites method."""
+        from cogs.ticket_management import GeneralSupportModal
+        
+        assert hasattr(GeneralSupportModal, '_build_ticket_channel_overwrites')
+
+    def test_general_support_modal_overwrites_denies_everyone(self, ticket_management_cog):
+        """Test that GeneralSupportModal creates overwrites that deny @everyone."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        from cogs.ticket_management import GeneralSupportModal
+        modal = object.__new__(GeneralSupportModal)
+        
+        overwrites = modal._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert guild.default_role in overwrites
+        everyone_overwrite = overwrites[guild.default_role]
+        assert everyone_overwrite.view_channel is False
+        assert everyone_overwrite.send_messages is False
+
+
+class TestRefundSupportModalOverwrites:
+    """Tests for RefundSupportModal permission overwrites."""
+
+    def test_refund_support_modal_has_build_method(self):
+        """Test that RefundSupportModal has the _build_ticket_channel_overwrites method."""
+        from cogs.ticket_management import RefundSupportModal
+        
+        assert hasattr(RefundSupportModal, '_build_ticket_channel_overwrites')
+
+    def test_refund_support_modal_overwrites_denies_everyone(self, ticket_management_cog):
+        """Test that RefundSupportModal creates overwrites that deny @everyone."""
+        guild = MagicMock(spec=discord.Guild)
+        guild.default_role = MagicMock(spec=discord.Role, id=123)
+        guild.me = MagicMock(spec=discord.Member, id=456)
+        
+        admin_role = MagicMock(spec=discord.Role, id=789)
+        member = MagicMock(spec=discord.Member, id=999)
+        
+        from cogs.ticket_management import RefundSupportModal
+        modal = object.__new__(RefundSupportModal)
+        
+        overwrites = modal._build_ticket_channel_overwrites(
+            guild, admin_role, member
+        )
+        
+        assert guild.default_role in overwrites
+        everyone_overwrite = overwrites[guild.default_role]
+        assert everyone_overwrite.view_channel is False
+        assert everyone_overwrite.send_messages is False
