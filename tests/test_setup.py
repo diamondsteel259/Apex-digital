@@ -927,6 +927,101 @@ class TestPanelValidation(unittest.TestCase):
         
         asyncio.run(run_test())
     
+    def test_validate_panel_deployment_help_panel_allows_no_components(self):
+        """Help panel is informational and should not require components."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+
+            mock_bot.db.find_panel = AsyncMock(
+                return_value={
+                    "id": 123,
+                    "message_id": 789,
+                    "channel_id": 11111,
+                    "guild_id": 98765,
+                    "type": "help",
+                }
+            )
+
+            mock_channel.fetch_message = AsyncMock(return_value=mock_message)
+
+            mock_embed = Mock()
+            mock_embed.title = "❓ How to Use Apex Core"
+
+            fields = []
+            for name in [
+                "How to Browse Products",
+                "How to Make Purchases",
+                "How to Open Tickets",
+                "How to Request Refunds",
+            ]:
+                f = Mock()
+                f.name = name
+                fields.append(f)
+            mock_embed.fields = fields
+
+            mock_message.embeds = [mock_embed]
+            mock_message.components = []
+
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "help", None
+            )
+
+            self.assertTrue(result["success"], f"Validation failed: {result['issues']}")
+
+        asyncio.run(run_test())
+
+    def test_validate_panel_deployment_reviews_panel_allows_no_components(self):
+        """Reviews panel is informational and should not require components."""
+        async def run_test():
+            mock_bot = create_mock_bot()
+            cog = create_setup_cog(mock_bot)
+            mock_guild = Mock()
+            mock_guild.id = 98765
+            mock_channel = Mock()
+            mock_channel.id = 11111
+            mock_message = Mock()
+            mock_message.id = 789
+
+            mock_bot.db.find_panel = AsyncMock(
+                return_value={
+                    "id": 123,
+                    "message_id": 789,
+                    "channel_id": 11111,
+                    "guild_id": 98765,
+                    "type": "reviews",
+                }
+            )
+
+            mock_channel.fetch_message = AsyncMock(return_value=mock_message)
+
+            mock_embed = Mock()
+            mock_embed.title = "⭐ Share Your Experience"
+
+            fields = []
+            for name in ["How to Leave a Review", "Rating System", "Earn Rewards"]:
+                f = Mock()
+                f.name = name
+                fields.append(f)
+            mock_embed.fields = fields
+
+            mock_message.embeds = [mock_embed]
+            mock_message.components = []
+
+            result = await cog._validate_panel_deployment(
+                mock_guild, mock_channel, mock_message, "reviews", None
+            )
+
+            self.assertTrue(result["success"], f"Validation failed: {result['issues']}")
+
+        asyncio.run(run_test())
+
     def test_validate_panel_deployment_message_missing(self):
         """Test validation fails when message is not accessible."""
         async def run_test():
