@@ -15,6 +15,11 @@ import discord
 from discord.ext import commands
 
 from apex_core.config import RateLimitRule
+from apex_core.constants import (
+    RATE_LIMIT_ALERT_COOLDOWN_SECONDS,
+    RATE_LIMIT_ALERT_THRESHOLD,
+    RATE_LIMIT_ALERT_WINDOW_SECONDS,
+)
 from apex_core.logger import get_logger
 from apex_core.utils.permissions import is_admin_from_bot
 
@@ -81,9 +86,9 @@ class RateLimiter:
         self._buckets: dict[str, RateLimitBucket] = {}
         self._violation_history: dict[tuple[int, str], deque[float]] = {}
         self._violation_lock = asyncio.Lock()
-        self.alert_threshold = 3  # Violations before alerting staff
-        self.alert_window = 300   # Seconds to keep violation history (5 minutes)
-        self.alert_cooldown = 600 # Minimum seconds between staff alerts per user/command
+        self.alert_threshold = RATE_LIMIT_ALERT_THRESHOLD
+        self.alert_window = RATE_LIMIT_ALERT_WINDOW_SECONDS
+        self.alert_cooldown = RATE_LIMIT_ALERT_COOLDOWN_SECONDS
         self._last_alert: dict[tuple[int, str], float] = {}
 
     def _bucket_key(self, command_key: str, scope: RateLimitScope, identifier: int) -> str:
