@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,28 @@ from typing import Any, Optional
 from .config import load_config, Config
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_role_name(name: str) -> str:
+    """Convert role name to snake_case attribute name.
+    
+    Args:
+        name: Role name (e.g., "Apex Staff")
+    
+    Returns:
+        Normalized snake_case name (e.g., "apex_staff")
+    """
+    # Convert to lowercase
+    name = name.lower()
+    # Replace spaces and hyphens with underscores
+    name = re.sub(r'[\s\-]+', '_', name)
+    # Remove any other special characters
+    name = re.sub(r'[^a-z0-9_]', '', name)
+    # Remove leading/trailing underscores
+    name = name.strip('_')
+    # Replace multiple underscores with single underscore
+    name = re.sub(r'_+', '_', name)
+    return name
 
 
 class ConfigWriter:
@@ -113,7 +136,12 @@ class ConfigWriter:
             role_id_updates: Dict of role name to ID mappings
             bot: Optional bot instance to reload config into
         """
-        await self.update_config_section("role_ids", role_id_updates, bot)
+        # Normalize role names to snake_case before writing to config
+        normalized_updates = {
+            _normalize_role_name(role_name): role_id
+            for role_name, role_id in role_id_updates.items()
+        }
+        await self.update_config_section("role_ids", normalized_updates, bot)
 
     async def set_ticket_categories(
         self,
