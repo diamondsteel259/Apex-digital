@@ -315,7 +315,17 @@ class CategorySelect(discord.ui.Select["CategorySelectView"]):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        logger.info(
+            "Category selected: %s | User: %s (%s) | Guild: %s | Channel: %s",
+            self.values[0] if self.values else "none",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        
         if self.values[0] == "none":
+            logger.debug("No categories available for user %s", interaction.user.id)
             await interaction.response.send_message(
                 "No products available at this time.",
                 ephemeral=True,
@@ -325,11 +335,13 @@ class CategorySelect(discord.ui.Select["CategorySelectView"]):
         main_category = self.values[0]
         cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")  # type: ignore
         if not cog:
+            logger.error("StorefrontCog not loaded when category selected by user %s", interaction.user.id)
             await interaction.response.send_message(
                 "Storefront cog not loaded.", ephemeral=True
             )
             return
         
+        logger.debug("Showing sub-categories for category: %s | User: %s", main_category, interaction.user.id)
         await cog._show_sub_categories(interaction, main_category)
 
 
@@ -363,8 +375,17 @@ class CategoryPaginatorButton(discord.ui.Button["CategorySelectView"]):
         self.direction = direction
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        logger.info(
+            "Category pagination: %s | User: %s (%s) | Guild: %s",
+            self.direction,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+        )
+        
         view = self.view
         if not isinstance(view, CategorySelectView):
+            logger.warning("Invalid view type for category pagination | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "Pagination unavailable. Please run the setup command again.",
                 ephemeral=True,
@@ -373,6 +394,7 @@ class CategoryPaginatorButton(discord.ui.Button["CategorySelectView"]):
         
         total_pages = view.total_pages
         if total_pages <= 1:
+            logger.debug("Single page, no pagination needed | User: %s", interaction.user.id)
             await interaction.response.defer()
             return
         
@@ -381,6 +403,7 @@ class CategoryPaginatorButton(discord.ui.Button["CategorySelectView"]):
         else:
             new_page = (view.page - 1) % total_pages
         
+        logger.debug("Paginating categories: page %s -> %s | User: %s", view.page, new_page, interaction.user.id)
         new_view = CategorySelectView(view.categories, page=new_page)
         await interaction.response.edit_message(view=new_view)
 
@@ -407,13 +430,24 @@ class SubCategorySelect(discord.ui.Select["SubCategorySelectView"]):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         sub_category = self.values[0]
+        logger.info(
+            "Sub-category selected: %s > %s | User: %s (%s) | Guild: %s",
+            self.main_category,
+            sub_category,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+        )
+        
         cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")  # type: ignore
         if not cog:
+            logger.error("StorefrontCog not loaded when sub-category selected by user %s", interaction.user.id)
             await interaction.response.send_message(
                 "Storefront cog not loaded.", ephemeral=True
             )
             return
         
+        logger.debug("Fetching products for: %s > %s | User: %s", self.main_category, sub_category, interaction.user.id)
         await cog._show_products(interaction, self.main_category, sub_category)
 
 
@@ -447,8 +481,17 @@ class VariantSelect(discord.ui.Select["ProductDisplayView"]):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
+        selected_id = int(self.values[0])
         if isinstance(view, ProductDisplayView):
-            view.selected_product_id = int(self.values[0])
+            view.selected_product_id = selected_id
+        
+        logger.info(
+            "Product variant selected: ID=%s | User: %s (%s) | Guild: %s",
+            selected_id,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+        )
         await interaction.response.defer()
 
 
@@ -462,8 +505,18 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
         self.sub_category = sub_category
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        logger.info(
+            "Open ticket button clicked | Category: %s > %s | User: %s (%s) | Guild: %s",
+            self.main_category,
+            self.sub_category,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+        )
+        
         cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")  # type: ignore
         if not cog:
+            logger.error("StorefrontCog not loaded when open ticket clicked by user %s", interaction.user.id)
             await interaction.response.send_message(
                 "Storefront cog not loaded.", ephemeral=True
             )
@@ -475,12 +528,14 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
             selected_product_id = view.selected_product_id
         
         if selected_product_id is None:
+            logger.warning("No product selected when opening ticket | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "Please select a service before opening a ticket.",
                 ephemeral=True,
             )
             return
         
+        logger.debug("Opening ticket for product ID=%s | User: %s", selected_product_id, interaction.user.id)
         await cog._handle_open_ticket(
             interaction,
             self.main_category,
@@ -524,7 +579,18 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         from bot import ApexCoreBot
         
+        logger.info(
+            "Wallet payment initiated | Product ID: %s | Price: %s cents | User: %s (%s) | Guild: %s | Channel: %s",
+            self.product_id,
+            self.final_price_cents,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        
         if not isinstance(interaction.client, ApexCoreBot):
+            logger.error("Invalid bot client type for wallet payment | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "An error occurred. Please try again.", ephemeral=True
             )
@@ -534,6 +600,7 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
         cog: StorefrontCog = bot.get_cog("StorefrontCog")  # type: ignore
         
         if not cog:
+            logger.error("StorefrontCog not loaded for wallet payment | User: %s", interaction.user.id)
             await interaction.response.send_message(
                 "Storefront cog not loaded.", ephemeral=True
             )
@@ -548,22 +615,35 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
             config_key="wallet_payment",
         )
         if not allowed:
+            logger.warning("Rate limit exceeded for wallet payment | User: %s", interaction.user.id)
             return
         
         await interaction.response.defer(ephemeral=True, thinking=True)
         
+        logger.debug("Fetching product: ID=%s | User: %s", self.product_id, interaction.user.id)
         product = await bot.db.get_product(self.product_id)
         if not product or not product["is_active"]:
+            logger.warning("Product not available: ID=%s | User: %s", self.product_id, interaction.user.id)
             await interaction.followup.send(
                 "This product is no longer available.", ephemeral=True
             )
             return
         
+        logger.debug("Product found: %s | User: %s", _product_display_name(product), interaction.user.id)
+        
+        logger.debug("Fetching user balance | User: %s", interaction.user.id)
         user_row = await bot.db.get_user(interaction.user.id)
         if not user_row or user_row["wallet_balance_cents"] < self.final_price_cents:
+            current_balance = user_row['wallet_balance_cents'] if user_row else 0
+            logger.warning(
+                "Insufficient balance | User: %s | Required: %s cents | Available: %s cents",
+                interaction.user.id,
+                self.final_price_cents,
+                current_balance,
+            )
             await interaction.followup.send(
                 f"Insufficient balance. You need {format_usd(self.final_price_cents)} "
-                f"but only have {format_usd(user_row['wallet_balance_cents'] if user_row else 0)}.",
+                f"but only have {format_usd(current_balance)}.",
                 ephemeral=True,
             )
             return
@@ -578,6 +658,14 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 interaction.user.id, self.product_id, vip_tier
             )
             
+            logger.info(
+                "Processing wallet payment | User: %s | Product: %s | VIP Tier: %s | Discount: %s%%",
+                interaction.user.id,
+                product_name,
+                vip_tier.name if vip_tier else "None",
+                discount_percent,
+            )
+            
             order_metadata = json.dumps({
                 "product_name": product_name,
                 "base_price_cents": product["price_cents"],
@@ -585,12 +673,22 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 "vip_tier": vip_tier.name if vip_tier else None,
             })
             
+            old_balance = user_row["wallet_balance_cents"]
             order_id, new_balance = await bot.db.purchase_product(
                 user_discord_id=interaction.user.id,
                 product_id=self.product_id,
                 price_paid_cents=self.final_price_cents,
                 discount_applied_percent=discount_percent,
                 order_metadata=order_metadata,
+            )
+            
+            logger.info(
+                "Wallet payment successful | User: %s | Order ID: %s | Amount: %s cents | Balance: %s -> %s cents",
+                interaction.user.id,
+                order_id,
+                self.final_price_cents,
+                old_balance,
+                new_balance,
             )
             
             success_embed = create_embed(
@@ -613,11 +711,24 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 )
             
         except ValueError as e:
+            logger.error(
+                "Wallet payment validation error | User: %s | Product: %s | Error: %s",
+                interaction.user.id,
+                self.product_id,
+                str(e),
+                exc_info=True,
+            )
             await interaction.followup.send(
                 f"Payment failed: {str(e)}", ephemeral=True
             )
         except Exception as e:
-            logger.error("Wallet payment error for user %s: %s", interaction.user.id, e)
+            logger.error(
+                "Wallet payment exception | User: %s | Product: %s | Error: %s",
+                interaction.user.id,
+                self.product_id,
+                str(e),
+                exc_info=True,
+            )
             await interaction.followup.send(
                 "An error occurred while processing your payment. Please contact support.",
                 ephemeral=True,
@@ -632,6 +743,13 @@ class PaymentProofUploadButton(discord.ui.Button["PaymentOptionsView"]):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        logger.info(
+            "Payment proof upload requested | User: %s (%s) | Guild: %s | Channel: %s",
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
         await interaction.response.send_message(
             "📎 **Upload Your Payment Proof**\n\n"
             "Please upload a screenshot or proof of your payment in this channel.\n\n"
@@ -652,6 +770,15 @@ class RequestCryptoAddressButton(discord.ui.Button["PaymentOptionsView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         networks_text = ", ".join(self.available_networks)
         
+        logger.info(
+            "Crypto address requested | Networks: %s | User: %s (%s) | Guild: %s | Channel: %s",
+            networks_text,
+            interaction.user.name,
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        
         await interaction.response.send_message(
             f"**Crypto Payment Request Sent**\n\n"
             f"Available networks: {networks_text}\n\n"
@@ -661,6 +788,7 @@ class RequestCryptoAddressButton(discord.ui.Button["PaymentOptionsView"]):
         )
         
         if isinstance(interaction.channel, discord.TextChannel):
+            logger.debug("Notifying staff of crypto address request | Channel: %s | User: %s", interaction.channel_id, interaction.user.id)
             await interaction.channel.send(
                 f"🔔 {interaction.user.mention} is requesting a crypto address.\n"
                 f"Available networks: {networks_text}\n\n"
