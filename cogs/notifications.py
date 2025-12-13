@@ -9,7 +9,9 @@ from discord.ext import commands, tasks
 
 from apex_core.utils import create_embed
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 class NotificationsCog(commands.Cog):
@@ -197,6 +199,7 @@ class NotificationsCog(commands.Cog):
     @app_commands.command(name="test-warranty-notification", description="Test warranty notification system (admin only)")
     async def test_warranty_notification(self, interaction: discord.Interaction) -> None:
         """Manually trigger the warranty notification check for testing."""
+        logger.info("Command: /test-warranty-notification | User: %s", interaction.user.id)
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True

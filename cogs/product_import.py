@@ -12,7 +12,9 @@ from discord.ext import commands
 
 from apex_core.utils import create_embed, format_usd
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
@@ -135,6 +137,10 @@ class ProductImportCog(commands.Cog):
         csv_file: discord.Attachment,
     ) -> None:
         """Import products from a CSV file."""
+        logger.info(
+            "Command: /import_products | User: %s | File: %s | Size: %s bytes",
+            interaction.user.id, csv_file.filename, csv_file.size
+        )
         member = self._resolve_member(interaction)
         if not self._is_admin(member):
             await interaction.response.send_message(

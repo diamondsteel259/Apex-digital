@@ -282,6 +282,12 @@ class WalletCog(commands.Cog):
             view=view,
         )
         await self.bot.db.create_ticket(user_discord_id=member.id, channel_id=channel.id)
+        
+        log_channel_id = getattr(self.bot.config.logging_channels, "wallet", None)
+        if log_channel_id:
+            log_channel = interaction.guild.get_channel(log_channel_id)
+            if isinstance(log_channel, discord.TextChannel):
+                 await log_channel.send(f"📥 {member.mention} opened a deposit ticket: {channel.mention}")
 
         await interaction.followup.send(
             f"Your deposit ticket is ready: {channel.mention}",
@@ -355,6 +361,15 @@ class WalletCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        # Log admin balance checks
+        if target.id != interaction.user.id:
+            logger.info("Admin %s checked balance of %s", interaction.user.id, target.id)
+            log_channel_id = getattr(self.bot.config.logging_channels, "wallet", None)
+            if log_channel_id:
+                log_channel = interaction.guild.get_channel(log_channel_id)
+                if isinstance(log_channel, discord.TextChannel):
+                     await log_channel.send(f"ℹ️ Admin {interaction.user.mention} checked balance of {target.mention}")
+
     @app_commands.command(name="addbalance", description="Credit funds to a member's wallet.")
     @app_commands.describe(
         member="Member that should receive the funds",
@@ -425,7 +440,7 @@ class WalletCog(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        audit_channel_id = self.bot.config.logging_channels.audit
+        audit_channel_id = getattr(self.bot.config.logging_channels, "wallet", None) or self.bot.config.logging_channels.audit
         audit_channel = interaction.guild.get_channel(audit_channel_id)
         if isinstance(audit_channel, discord.TextChannel):
             audit_embed = create_embed(
@@ -441,7 +456,7 @@ class WalletCog(commands.Cog):
             )
             await audit_channel.send(embed=audit_embed)
         else:
-            logger.warning("Audit channel %s not found", audit_channel_id)
+            logger.warning("Wallet/Audit channel %s not found", audit_channel_id)
 
         if notify_user:
             dm_embed = create_embed(

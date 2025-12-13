@@ -68,6 +68,7 @@ class LoggingChannels:
     errors: int
     order_logs: int | None = None
     transcript_archive: int | None = None
+    wallet: int | None = None
 
 
 @dataclass(frozen=True)

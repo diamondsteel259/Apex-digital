@@ -15,7 +15,9 @@ from apex_core.utils import (
     render_operating_hours,
 )
 
-logger = logging.getLogger(__name__)
+from apex_core.logger import get_logger
+
+logger = get_logger()
 
 
 class ManualOrdersCog(commands.Cog):
@@ -66,6 +68,10 @@ class ManualOrdersCog(commands.Cog):
         product_name: str,
         notes: str = "",
     ) -> None:
+        logger.info(
+            "Command: /manual_complete | User: %s | Amount: %s | Product: %s | Staff: %s",
+            user.id, amount, product_name, interaction.user.id
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
@@ -231,6 +237,10 @@ class ManualOrdersCog(commands.Cog):
         user: discord.Member,
         role_name: str,
     ) -> None:
+        logger.info(
+            "Command: /assign_role | User: %s | Role: %s | Staff: %s",
+            user.id, role_name, interaction.user.id
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
@@ -324,6 +334,10 @@ class ManualOrdersCog(commands.Cog):
         user: discord.Member,
         role_name: str,
     ) -> None:
+        logger.info(
+            "Command: /remove_role | User: %s | Role: %s | Staff: %s",
+            user.id, role_name, interaction.user.id
+        )
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command must be used in a server.", ephemeral=True
