@@ -75,6 +75,43 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
         max_length=1000,
     )
     
+    def _build_ticket_channel_overwrites(
+        self,
+        guild: discord.Guild,
+        admin_role: discord.Role | None,
+        member: discord.Member,
+    ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+        """Build permission overwrites for a secure ticket channel.
+        
+        Denies @everyone view/send access while allowing bot, admin, and the member.
+        """
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            ),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            ),
+        }
+        
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+        
+        return overwrites
+    
     async def on_submit(self, interaction: discord.Interaction) -> None:
         from bot import ApexCoreBot
         
@@ -116,9 +153,28 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
             
             channel_name = cog._generate_channel_name(interaction.user.name, "support")
             
+            admin_role_id = bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"General support ticket for {interaction.user.name}",
             )
             
@@ -128,9 +184,6 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 status="open",
                 ticket_type="support",
             )
-            
-            admin_role_id = bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
             
             embed = create_embed(
                 title="General Support Ticket",
@@ -150,18 +203,6 @@ class GeneralSupportModal(discord.ui.Modal, title="Open General Support Ticket")
                 content = f"{admin_role.mention} {content}"
             
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
             
             await interaction.followup.send(
                 f"✅ Support ticket created: {channel.mention}",
@@ -195,6 +236,43 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
         required=True,
         max_length=1000,
     )
+    
+    def _build_ticket_channel_overwrites(
+        self,
+        guild: discord.Guild,
+        admin_role: discord.Role | None,
+        member: discord.Member,
+    ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+        """Build permission overwrites for a secure ticket channel.
+        
+        Denies @everyone view/send access while allowing bot, admin, and the member.
+        """
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            ),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            ),
+        }
+        
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+        
+        return overwrites
     
     async def on_submit(self, interaction: discord.Interaction) -> None:
         from bot import ApexCoreBot
@@ -257,9 +335,28 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
                 interaction.user.name, "refund", counter
             )
             
+            admin_role_id = bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"Refund ticket #{counter} for {interaction.user.name}",
             )
             
@@ -268,9 +365,6 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
                 (channel.id, ticket_id)
             )
             await bot.db._connection.commit()
-            
-            admin_role_id = bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
             
             # Get refund settings
             refund_settings = getattr(bot.config, 'refund_settings', None)
@@ -309,18 +403,6 @@ class RefundSupportModal(discord.ui.Modal, title="Open Refund Request Ticket"):
                 content = f"{admin_role.mention} {content}"
             
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
             
             await interaction.followup.send(
                 f"✅ Refund ticket created: {channel.mention}",
@@ -381,6 +463,43 @@ class TicketManagementCog(commands.Cog):
             return False
         admin_role_id = self.bot.config.role_ids.admin
         return any(role.id == admin_role_id for role in getattr(member, "roles", []))
+
+    def _build_ticket_channel_overwrites(
+        self,
+        guild: discord.Guild,
+        admin_role: discord.Role | None,
+        member: discord.Member,
+    ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+        """Build permission overwrites for a secure ticket channel.
+        
+        Denies @everyone view/send access while allowing bot, admin, and the member.
+        """
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+            ),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            ),
+        }
+        
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+        
+        return overwrites
 
     def _resolve_member(self, interaction: discord.Interaction) -> discord.Member | None:
         if isinstance(interaction.user, discord.Member):
@@ -793,9 +912,28 @@ class TicketManagementCog(commands.Cog):
                 interaction.user.name, "order", counter
             )
             
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"Order support ticket #{counter} for {interaction.user.name}",
             )
 
@@ -805,9 +943,6 @@ class TicketManagementCog(commands.Cog):
                 (channel.id, ticket_id)
             )
             await self.bot.db._connection.commit()
-
-            admin_role_id = self.bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="Order Support Ticket",
@@ -829,18 +964,6 @@ class TicketManagementCog(commands.Cog):
                 content = f"{admin_role.mention} {content}"
 
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
 
             await interaction.followup.send(
                 f"✅ Ticket created: {channel.mention}",
@@ -898,9 +1021,28 @@ class TicketManagementCog(commands.Cog):
                 interaction.user.name, "warranty", counter
             )
             
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"Warranty ticket #{counter} for {interaction.user.name}",
             )
 
@@ -909,9 +1051,6 @@ class TicketManagementCog(commands.Cog):
                 (channel.id, ticket_id)
             )
             await self.bot.db._connection.commit()
-
-            admin_role_id = self.bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="Warranty Support Ticket",
@@ -932,18 +1071,6 @@ class TicketManagementCog(commands.Cog):
                 content = f"{admin_role.mention} {content}"
 
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
 
             await interaction.followup.send(
                 f"✅ Warranty ticket created: {channel.mention}",
@@ -991,9 +1118,28 @@ class TicketManagementCog(commands.Cog):
                 interaction.user.name, "support"
             )
             
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"General support ticket for {interaction.user.name}",
             )
 
@@ -1003,9 +1149,6 @@ class TicketManagementCog(commands.Cog):
                 status="open",
                 ticket_type="support",
             )
-
-            admin_role_id = self.bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="General Support Ticket",
@@ -1025,18 +1168,6 @@ class TicketManagementCog(commands.Cog):
                 content = f"{admin_role.mention} {content}"
 
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
 
             await interaction.followup.send(
                 f"✅ Support ticket created: {channel.mention}",
@@ -1095,9 +1226,28 @@ class TicketManagementCog(commands.Cog):
                 interaction.user.name, "refund", counter
             )
             
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"Refund ticket #{counter} for {interaction.user.name}",
             )
 
@@ -1106,9 +1256,6 @@ class TicketManagementCog(commands.Cog):
                 (channel.id, ticket_id)
             )
             await self.bot.db._connection.commit()
-
-            admin_role_id = self.bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="🛡️ Refund Request Ticket",
@@ -1135,18 +1282,6 @@ class TicketManagementCog(commands.Cog):
                 content = f"{admin_role.mention} {content}"
 
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
 
             await interaction.followup.send(
                 f"✅ Refund ticket created: {channel.mention}",
@@ -1202,9 +1337,28 @@ class TicketManagementCog(commands.Cog):
                 interaction.user.name, "billing", counter
             )
             
+            admin_role_id = self.bot.config.role_ids.admin
+            admin_role = interaction.guild.get_role(admin_role_id)
+            
+            member = interaction.user
+            if not isinstance(member, discord.Member):
+                await interaction.followup.send(
+                    "Failed to create ticket. Please try again.",
+                    ephemeral=True
+                )
+                logger.error("User is not a member of the guild")
+                return
+            
+            overwrites = self._build_ticket_channel_overwrites(
+                interaction.guild,
+                admin_role,
+                member,
+            )
+            
             channel = await interaction.guild.create_text_channel(
                 name=channel_name,
                 category=category,
+                overwrites=overwrites,
                 reason=f"Billing ticket #{counter} for {interaction.user.name}",
             )
 
@@ -1213,9 +1367,6 @@ class TicketManagementCog(commands.Cog):
                 (channel.id, ticket_id)
             )
             await self.bot.db._connection.commit()
-
-            admin_role_id = self.bot.config.role_ids.admin
-            admin_role = interaction.guild.get_role(admin_role_id)
 
             embed = create_embed(
                 title="💳 Billing Issue Ticket",
@@ -1236,18 +1387,6 @@ class TicketManagementCog(commands.Cog):
                 content = f"{admin_role.mention} {content}"
 
             await channel.send(content=content, embed=embed)
-            
-            member = interaction.user
-            if isinstance(member, discord.Member):
-                try:
-                    await channel.set_permissions(
-                        member,
-                        read_messages=True,
-                        send_messages=True,
-                        view_channel=True,
-                    )
-                except discord.HTTPException as e:
-                    logger.warning("Failed to set channel permissions for ticket %s: %s", ticket_id, e)
 
             await interaction.followup.send(
                 f"✅ Billing ticket created: {channel.mention}",
