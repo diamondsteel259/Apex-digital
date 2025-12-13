@@ -32,7 +32,32 @@ def create_mock_bot():
 
 def create_setup_cog(mock_bot):
     """Create a SetupCog instance with mocked dependencies."""
+    # Mock the loop tasks to prevent background tasks from starting
+    mock_bot.loop = Mock()
+    mock_bot.loop.create_task = Mock()
+    
+    # Create mock config writer with async methods
+    class MockConfigWriter:
+        def __init__(self):
+            self.set_role_ids_called_with = None
+            self.set_category_ids_called_with = None
+            self.set_channel_ids_called_with = None
+            
+        async def set_role_ids(self, roles, bot=None):
+            self.set_role_ids_called_with = (roles, bot)
+            
+        async def set_category_ids(self, categories, bot=None):
+            self.set_category_ids_called_with = (categories, bot)
+            
+        async def set_channel_ids(self, channels, bot=None):
+            self.set_channel_ids_called_with = (channels, bot)
+    
+    mock_config_writer = MockConfigWriter()
+    mock_bot.config_writer = mock_config_writer
+    
     cog = SetupCog(mock_bot)
+    # Override with our custom mock that tracks calls
+    cog.config_writer = mock_config_writer
     return cog
 
 
@@ -398,6 +423,31 @@ class TestTimeoutHandling(unittest.TestCase):
                 "⏰ Deployment menu timed out. Please try again.",
                 ephemeral=True
             )
+        
+        asyncio.run(run_test())
+    
+    def test_setup_menu_view_context_timeout(self):
+        """Test SetupMenuView handles timeout correctly with prefix command context."""
+        async def run_test():
+            from cogs.setup import SetupMenuView
+            from discord.ext import commands
+            
+            # Create mock command context
+            mock_ctx = AsyncMock(spec=commands.Context)
+            mock_ctx.send = AsyncMock()
+            mock_bot = Mock()
+            mock_bot.get_user = Mock()
+            mock_ctx.bot = mock_bot
+            
+            # Create view with command context
+            view = SetupMenuView(command_context=mock_ctx, user_id=123)
+            
+            await view.on_timeout()
+            
+            mock_ctx.send.assert_called_once()
+            call_args = mock_ctx.send.call_args[0][0]
+            self.assertIn("⏰ Setup menu timed out", call_args)
+            self.assertIn("Try using `/setup` for a faster experience!", call_args)
         
         asyncio.run(run_test())
 
@@ -1564,6 +1614,140 @@ class TestSessionPersistenceIntegration(unittest.TestCase):
                     
                 finally:
                     await db.close()
+        
+        asyncio.run(run_test())
+
+
+class TestServerProvisioningIDPersistence(unittest.TestCase):
+    """Test server provisioning ID persistence functionality."""
+    
+    def test_log_provisioned_ids_with_full_mapping(self):
+        """Test _log_provisioned_ids receives expected payload when server provisioning succeeds."""
+        async def run_test():
+            # Create mock bot with config writer
+            mock_bot = create_mock_bot()
+            
+            # Create setup cog with mocked dependencies
+            cog = create_setup_cog(mock_bot)
+            
+            # Test mappings that would be created during server provisioning
+            roles = {
+                "Apex Staff": 111111111111111111,
+                "Apex Client": 222222222222222222,
+                "Apex Insider": 333333333333333333
+            }
+            categories = {
+                "📦 PRODUCTS": 444444444444444444,
+                "🛟 SUPPORT": 555555555555555555,
+                "📋 INFORMATION": 666666666666666666,
+                "📊 LOGS": 777777777777777777
+            }
+            channels = {
+                "products": 888888888888888888,
+                "support": 999999999999999999,
+                "tickets": 101010101010101010,
+                "help": 111111111111111111,
+                "reviews": 121212121212121212,
+                "announcements": 131313131313131313,
+                "audit-log": 141414141414141414,
+                "payment-log": 151515151515151515,
+                "error-log": 161616161616161616
+            }
+            
+            # Test the actual method
+            await cog._log_provisioned_ids(roles=roles, categories=categories, channels=channels)
+            
+            # Verify all mappings were passed to config writer
+            self.assertEqual(cog.config_writer.set_role_ids_called_with, (roles, mock_bot))
+            self.assertEqual(cog.config_writer.set_category_ids_called_with, (categories, mock_bot))
+            self.assertEqual(cog.config_writer.set_channel_ids_called_with, (channels, mock_bot))
+        
+        asyncio.run(run_test())
+    
+    def test_log_provisioned_ids_with_empty_mappings(self):
+        """Test _log_provisioned_ids handles empty mappings gracefully."""
+        async def run_test():
+            # Create mock bot with config writer
+            mock_bot = create_mock_bot()
+            
+            # Create setup cog with mocked dependencies
+            cog = create_setup_cog(mock_bot)
+            
+            # Test with None mappings
+            await cog._log_provisioned_ids(roles=None, categories=None, channels=None)
+            
+            # Verify no config writer methods were called
+            self.assertIsNone(cog.config_writer.set_role_ids_called_with)
+            self.assertIsNone(cog.config_writer.set_category_ids_called_with)
+            self.assertIsNone(cog.config_writer.set_channel_ids_called_with)
+        
+        asyncio.run(run_test())
+    
+    def test_log_provisioned_ids_partial_mappings(self):
+        """Test _log_provisioned_ids handles partial mappings correctly."""
+        async def run_test():
+            # Create mock bot with config writer
+            mock_bot = create_mock_bot()
+            
+            # Create setup cog with mocked dependencies
+            cog = create_setup_cog(mock_bot)
+            
+            # Test with only roles and channels
+            roles = {"Apex Staff": 111111111111111111}
+            channels = {"products": 222222222222222222}
+            
+            await cog._log_provisioned_ids(roles=roles, channels=channels)
+            
+            # Verify only the provided mappings were updated
+            self.assertEqual(cog.config_writer.set_role_ids_called_with, (roles, mock_bot))
+            self.assertIsNone(cog.config_writer.set_category_ids_called_with)
+            self.assertEqual(cog.config_writer.set_channel_ids_called_with, (channels, mock_bot))
+        
+        asyncio.run(run_test())
+    
+    def test_log_provisioned_ids_exception_handling(self):
+        """Test _log_provisioned_ids handles exceptions gracefully."""
+        async def run_test():
+            # Create mock bot with config writer
+            mock_bot = create_mock_bot()
+            
+            # Create a custom mock that raises exception
+            class FailingConfigWriter:
+                def __init__(self):
+                    self.set_role_ids_called_with = None
+                    
+                async def set_role_ids(self, roles, bot=None):
+                    self.set_role_ids_called_with = (roles, bot)
+                    raise Exception("Config write failed")
+                    
+                async def set_category_ids(self, categories, bot=None):
+                    pass  # Not called in this test
+                    
+                async def set_channel_ids(self, channels, bot=None):
+                    pass  # Not called in this test
+            
+            # Set up the cog with failing config writer
+            mock_bot.loop = Mock()
+            mock_bot.loop.create_task = Mock()
+            failing_writer = FailingConfigWriter()
+            mock_bot.config_writer = failing_writer
+            
+            cog = SetupCog(mock_bot)
+            cog.config_writer = failing_writer
+            
+            # Test that exception is caught and logged (method doesn't raise)
+            roles = {"Apex Staff": 111111111111111111}
+            
+            # Should not raise exception but log error (method handles exceptions internally)
+            try:
+                await cog._log_provisioned_ids(roles=roles)
+                # If we reach here, the exception was handled correctly
+                self.assertTrue(True, "Exception was handled gracefully")
+            except Exception as e:
+                self.fail(f"Exception should have been handled: {e}")
+            
+            # Verify the method was called before the exception
+            self.assertEqual(failing_writer.set_role_ids_called_with, (roles, mock_bot))
         
         asyncio.run(run_test())
 
