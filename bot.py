@@ -138,7 +138,11 @@ class ApexCoreBot(commands.Bot):
         # Cancel background tasks
         if cleanup_expired_sessions_task.is_running():
             cleanup_expired_sessions_task.cancel()
-            logger.info("Background tasks cancelled.")
+            logger.info("Background cleanup task cancelled.")
+        
+        if daily_backup_task.is_running():
+            daily_backup_task.cancel()
+            logger.info("Daily backup task cancelled.")
 
         await self.db.close()
         logger.info("Database connection closed.")
@@ -167,6 +171,58 @@ async def cleanup_expired_sessions_task():
 async def before_cleanup_task():
     """Wait for bot to be ready before starting cleanup task."""
     bot = cleanup_expired_sessions_task.bot
+    await bot.wait_until_ready()
+
+
+@tasks.loop(hours=24.0)
+async def daily_backup_task():
+    """
+    Create automatic daily database backup.
+    
+    Runs once per day at 3 AM UTC (or when bot starts if configured).
+    """
+    try:
+        bot = daily_backup_task.bot
+        from pathlib import Path
+        import shutil
+        from datetime import datetime, timedelta
+        
+        backup_dir = Path("backups")
+        backup_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = backup_dir / f"apex_core_backup_{timestamp}.db"
+        
+        # Copy database file
+        db_path = Path(bot.db.db_path)
+        if db_path.exists():
+            shutil.copy2(db_path, backup_file)
+            
+            # Clean old backups (keep last 30 days)
+            cutoff_date = datetime.now() - timedelta(days=30)
+            deleted_count = 0
+            for old_backup in backup_dir.glob("apex_core_backup_*.db"):
+                try:
+                    date_str = old_backup.stem.split("_")[-2]
+                    backup_date = datetime.strptime(date_str, "%Y%m%d")
+                    if backup_date < cutoff_date:
+                        old_backup.unlink()
+                        deleted_count += 1
+                except (ValueError, IndexError):
+                    continue
+            
+            logger.info(f"Daily backup created: {backup_file} (deleted {deleted_count} old backups)")
+        else:
+            logger.warning("Database file not found for daily backup")
+            
+    except Exception as error:
+        logger.error(f"Failed to create daily backup: {error}", exc_info=True)
+
+
+@daily_backup_task.before_loop
+async def before_daily_backup_task():
+    """Wait for bot to be ready before starting daily backup task."""
+    bot = daily_backup_task.bot
     await bot.wait_until_ready()
 
 
@@ -217,6 +273,10 @@ async def main():
     cleanup_expired_sessions_task.bot = bot
     cleanup_expired_sessions_task.start()
     logger.info("Started background cleanup tasks")
+    
+    daily_backup_task.bot = bot
+    daily_backup_task.start()
+    logger.info("Started daily backup task")
 
     async with bot:
         await bot.start(config.token)

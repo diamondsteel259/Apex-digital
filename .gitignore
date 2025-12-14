@@ -181,6 +181,9 @@ Thumbs.db
 *.db
 config.json
 config/payments.json
+config_backups/
+*.backup
+*.bak
 logs/
 transcripts/
 

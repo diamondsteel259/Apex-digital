@@ -2,6 +2,7 @@
 
 from .currency import format_usd
 from .embeds import create_embed
+from .error_messages import ERROR_MESSAGES, get_error_message
 from .permissions import is_admin, is_admin_from_bot, is_admin_member
 from .purchase import handle_vip_promotion, process_post_purchase
 from .roles import check_and_update_roles, get_user_roles
@@ -22,4 +23,6 @@ __all__ = [
     "is_admin",
     "is_admin_from_bot",
     "is_admin_member",
+    "get_error_message",
+    "ERROR_MESSAGES",
 ]

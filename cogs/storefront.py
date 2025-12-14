@@ -97,6 +97,8 @@ def _build_payment_embed(
     final_price_cents: int,
     user_balance_cents: int,
     payment_methods: Sequence[PaymentMethod],
+    promo_code: Optional[str] = None,
+    promo_discount_cents: int = 0,
 ) -> discord.Embed:
     """
     Build comprehensive payment options embed with available payment methods.
@@ -119,12 +121,17 @@ def _build_payment_embed(
     service_name = product.get("service_name", "Unknown")
     start_time = product.get("start_time", "N/A")
     
+    # Build price description with promo code if applicable
+    price_text = f"**Price:** {format_usd(final_price_cents)}"
+    if promo_code:
+        price_text += f"\n🎟️ **Promo Code:** `{promo_code}` (Saved {format_usd(promo_discount_cents)})"
+    
     embed = create_embed(
         title=f"💳 Payment Options for {variant_name}",
         description=(
             f"**Service:** {service_name}\n"
             f"**Variant:** {variant_name}\n"
-            f"**Price:** {format_usd(final_price_cents)}\n"
+            f"{price_text}\n"
             f"**ETA:** {start_time}\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
@@ -522,6 +529,9 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
         self.sub_category = sub_category
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        from apex_core.logger import get_logger
+        logger = get_logger()
+        
         logger.info(
             "Open ticket button clicked | Category: %s > %s | User: %s (%s) | Guild: %s",
             self.main_category,
@@ -552,13 +562,25 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
             )
             return
         
-        logger.debug("Opening ticket for product ID=%s | User: %s", selected_product_id, interaction.user.id)
-        await cog._handle_open_ticket(
-            interaction,
-            self.main_category,
-            self.sub_category,
-            selected_product_id,
-        )
+        # Check if product requires customization (you can customize this logic)
+        # For now, we'll show customization modal for all products
+        # You can add a product field like "requires_customization" to control this
+        product = await interaction.client.db.get_product(selected_product_id)  # type: ignore
+        requires_customization = product and product.get("requires_customization", False) if product else False
+        
+        if requires_customization:
+            # Show customization modal first
+            product_name = product.get("variant_name", "Product") if product else "Product"
+            modal = ProductCustomizationModal(product_name, selected_product_id, self.main_category, self.sub_category)
+            await interaction.response.send_modal(modal)
+        else:
+            logger.debug("Opening ticket for product ID=%s | User: %s", selected_product_id, interaction.user.id)
+            await cog._handle_open_ticket(
+                interaction,
+                self.main_category,
+                self.sub_category,
+                selected_product_id,
+            )
 
 
 class ProductDisplayView(discord.ui.View):
@@ -581,6 +603,7 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
         final_price_cents: int,
         user_balance_cents: int,
         sufficient: bool,
+        payment_view: Optional["PaymentOptionsView"] = None,
     ) -> None:
         style = discord.ButtonStyle.success if sufficient else discord.ButtonStyle.danger
         label = "💳 Pay with Wallet"
@@ -592,6 +615,7 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
         self.product_id = product_id
         self.final_price_cents = final_price_cents
         self.user_balance_cents = user_balance_cents
+        self.payment_view = payment_view
 
     async def callback(self, interaction: discord.Interaction) -> None:
         from bot import ApexCoreBot
@@ -650,16 +674,28 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
         
         logger.debug("Fetching user balance | User: %s", interaction.user.id)
         user_row = await bot.db.get_user(interaction.user.id)
-        if not user_row or user_row["wallet_balance_cents"] < self.final_price_cents:
+        
+        # Get final price (may have been updated by promo code)
+        final_price = self.final_price_cents
+        if self.payment_view and self.payment_view.applied_promo_code:
+            final_price = self.payment_view.final_price_cents
+            logger.info(
+                "Using promo code price | User: %s | Promo: %s | Price: %s cents",
+                interaction.user.id,
+                self.payment_view.applied_promo_code,
+                final_price
+            )
+        
+        if not user_row or user_row["wallet_balance_cents"] < final_price:
             current_balance = user_row['wallet_balance_cents'] if user_row else 0
             logger.warning(
                 "Insufficient balance | User: %s | Required: %s cents | Available: %s cents",
                 interaction.user.id,
-                self.final_price_cents,
+                final_price,
                 current_balance,
             )
             await interaction.followup.send(
-                f"Insufficient balance. You need {format_usd(self.final_price_cents)} "
+                f"Insufficient balance. You need {format_usd(final_price)} "
                 f"but only have {format_usd(current_balance)}.",
                 ephemeral=True,
             )
@@ -675,12 +711,20 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 interaction.user.id, self.product_id, vip_tier
             )
             
+            # Check for promo code
+            promo_code = None
+            promo_discount_cents = 0
+            if self.payment_view and self.payment_view.applied_promo_code:
+                promo_code = self.payment_view.applied_promo_code
+                promo_discount_cents = self.payment_view.promo_discount_cents
+            
             logger.info(
-                "Processing wallet payment | User: %s | Product: %s | VIP Tier: %s | Discount: %s%%",
+                "Processing wallet payment | User: %s | Product: %s | VIP Tier: %s | Discount: %s%% | Promo: %s",
                 interaction.user.id,
                 product_name,
                 vip_tier.name if vip_tier else "None",
                 discount_percent,
+                promo_code or "None",
             )
             
             order_metadata = json.dumps({
@@ -688,24 +732,45 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                 "base_price_cents": product["price_cents"],
                 "discount_percent": discount_percent,
                 "vip_tier": vip_tier.name if vip_tier else None,
+                "promo_code": promo_code,
+                "promo_discount_cents": promo_discount_cents,
             })
             
             old_balance = user_row["wallet_balance_cents"]
             order_id, new_balance = await bot.db.purchase_product(
                 user_discord_id=interaction.user.id,
                 product_id=self.product_id,
-                price_paid_cents=self.final_price_cents,
+                price_paid_cents=final_price,
                 discount_applied_percent=discount_percent,
                 order_metadata=order_metadata,
             )
             
+            # Record promo code usage if applied
+            if promo_code:
+                try:
+                    await bot.db.use_promo_code(
+                        code=promo_code,
+                        user_id=interaction.user.id,
+                        order_id=order_id,
+                        discount_cents=promo_discount_cents,
+                    )
+                    logger.info(
+                        "Promo code usage recorded | User: %s | Code: %s | Order: %s",
+                        interaction.user.id,
+                        promo_code,
+                        order_id
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to record promo code usage: {e}", exc_info=True)
+            
             logger.info(
-                "Wallet payment successful | User: %s | Order ID: %s | Amount: %s cents | Balance: %s -> %s cents",
+                "Wallet payment successful | User: %s | Order ID: %s | Amount: %s cents | Balance: %s -> %s cents | Promo: %s",
                 interaction.user.id,
                 order_id,
-                self.final_price_cents,
+                final_price,
                 old_balance,
                 new_balance,
+                promo_code or "None",
             )
             
             # Log to wallet channel
@@ -726,14 +791,15 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                         except Exception as e:
                             logger.error("Failed to log wallet payment to channel: %s", e)
             
+            promo_text = f"\n**Promo Code:** `{promo_code}` (Saved {format_usd(promo_discount_cents)})" if promo_code else ""
             success_embed = create_embed(
                 title="Payment Confirmed!",
                 description=(
                     f"✅ Payment successful via Wallet\n\n"
                     f"**Product:** {product_name}\n"
-                    f"**Amount Paid:** {format_usd(self.final_price_cents)}\n"
+                    f"**Amount Paid:** {format_usd(final_price)}\n"
                     f"**New Balance:** {format_usd(new_balance)}\n"
-                    f"**Order ID:** #{order_id}\n\n"
+                    f"**Order ID:** #{order_id}{promo_text}\n\n"
                     "A staff member will process your order shortly."
                 ),
                 color=discord.Color.green(),
@@ -741,8 +807,9 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
             await interaction.followup.send(embed=success_embed, ephemeral=True)
             
             if isinstance(interaction.channel, discord.TextChannel):
+                promo_msg = f" (Promo: {promo_code})" if promo_code else ""
                 await interaction.channel.send(
-                    f"✅ {interaction.user.mention} has paid {format_usd(self.final_price_cents)} via Wallet. Order ID: #{order_id}"
+                    f"✅ {interaction.user.mention} has paid {format_usd(final_price)} via Wallet{promo_msg}. Order ID: #{order_id}"
                 )
             
         except ValueError as e:
@@ -831,6 +898,184 @@ class RequestCryptoAddressButton(discord.ui.Button["PaymentOptionsView"]):
             )
 
 
+class PromoCodeModal(discord.ui.Modal, title="Apply Promo Code"):
+    """Modal to enter promo code."""
+    
+    def __init__(self, cog_instance, product_id: int, base_price_cents: int, current_discount: float, payment_view):
+        super().__init__()
+        self.cog = cog_instance
+        self.product_id = product_id
+        self.base_price_cents = base_price_cents
+        self.current_discount = current_discount
+        self.payment_view = payment_view
+        
+        self.code_input = discord.ui.TextInput(
+            label="Promo Code",
+            placeholder="Enter your promo code (e.g., SUMMER25)",
+            required=True,
+            max_length=20
+        )
+        self.add_item(self.code_input)
+    
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        """Validate and apply promo code."""
+        from apex_core.logger import get_logger
+        logger = get_logger()
+        
+        code = self.code_input.value.strip().upper()
+        logger.info(
+            f"Promo code entered | User: {interaction.user.id} | "
+            f"Code: {code} | Product: {self.product_id}"
+        )
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Validate promo code
+            is_valid, error_msg, promo_discount_cents = await self.cog.bot.db.validate_promo_code(
+                code,
+                interaction.user.id,
+                self.base_price_cents,
+                self.product_id
+            )
+            
+            if not is_valid:
+                from apex_core.utils.error_messages import get_error_message
+                if "Invalid promo code" in error_msg:
+                    error_display = get_error_message("invalid_promo_code", code=code)
+                elif "expired" in error_msg.lower():
+                    error_display = get_error_message("promo_code_expired", code=code, expired_date="Previously")
+                elif "maximum" in error_msg.lower() or "limit" in error_msg.lower():
+                    error_display = get_error_message("promo_code_max_uses", code=code, max_uses="Maximum", current_uses="Current")
+                else:
+                    error_display = f"❌ {error_msg}"
+                
+                await interaction.followup.send(error_display, ephemeral=True)
+                return
+            
+            # Get promo code details
+            promo = await self.cog.bot.db.get_promo_code(code)
+            if not promo:
+                await interaction.followup.send(
+                    "❌ Promo code not found. Please try again.",
+                    ephemeral=True
+                )
+                return
+            
+            # Calculate new price with promo code
+            price_after_vip = int(self.base_price_cents * (1 - self.current_discount / 100))
+            
+            # Check if stackable or no VIP discount
+            if promo["is_stackable"] or self.current_discount == 0:
+                final_price = price_after_vip - promo_discount_cents
+            else:
+                # Use better discount
+                vip_discount_cents = self.base_price_cents - price_after_vip
+                final_price = self.base_price_cents - max(vip_discount_cents, promo_discount_cents)
+            
+            if final_price < 0:
+                final_price = 0
+            
+            # Store promo code in payment view
+            self.payment_view.applied_promo_code = code
+            self.payment_view.promo_discount_cents = promo_discount_cents
+            self.payment_view.final_price_cents = final_price
+            
+            logger.info(
+                f"Promo code applied | User: {interaction.user.id} | "
+                f"Code: {code} | Discount: {format_usd(promo_discount_cents)} | "
+                f"Final price: {format_usd(final_price)}"
+            )
+            
+            # Update payment embed with new price
+            if self.payment_view.payment_message:
+                try:
+                    # Rebuild payment embed with promo code
+                    from apex_core.utils import _build_payment_embed
+                    user_row = await self.cog.bot.db.get_user(interaction.user.id)
+                    user_balance = user_row["wallet_balance_cents"] if user_row else 0
+                    
+                    product = await self.cog.bot.db.get_product(self.product_id)
+                    member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+                    
+                    if product and member:
+                        updated_embed = _build_payment_embed(
+                            product=product,
+                            user=member,
+                            final_price_cents=final_price,
+                            user_balance_cents=user_balance,
+                            payment_methods=self.payment_view.payment_methods,
+                            promo_code=code,
+                            promo_discount_cents=promo_discount_cents,
+                        )
+                        
+                        # Update wallet button if needed
+                        new_view = PaymentOptionsView(
+                            product_id=self.product_id,
+                            final_price_cents=final_price,
+                            user_balance_cents=user_balance,
+                            payment_methods=self.payment_view.payment_methods,
+                            cog_instance=self.cog,
+                            base_price_cents=self.base_price_cents,
+                            current_discount=self.current_discount,
+                            payment_message=self.payment_view.payment_message,
+                        )
+                        new_view.applied_promo_code = code
+                        new_view.promo_discount_cents = promo_discount_cents
+                        
+                        await self.payment_view.payment_message.edit(embed=updated_embed, view=new_view)
+                except Exception as e:
+                    logger.error(f"Failed to update payment embed: {e}", exc_info=True)
+            
+            embed = create_embed(
+                title="✅ Promo Code Applied!",
+                description=(
+                    f"**Code:** `{code}`\n"
+                    f"**Discount:** {format_usd(promo_discount_cents)}\n"
+                    f"**Original Price:** {format_usd(self.base_price_cents)}\n"
+                    f"**Price After VIP:** {format_usd(price_after_vip)}\n"
+                    f"**Final Price:** {format_usd(final_price)}\n\n"
+                    f"The payment options have been updated with your discount!"
+                ),
+                color=discord.Color.green()
+            )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.exception(f"Failed to apply promo code | Error: {e}", exc_info=True)
+            await interaction.followup.send(
+                f"❌ Failed to apply promo code: {str(e)}",
+                ephemeral=True
+            )
+
+
+class PromoCodeButton(discord.ui.Button["PaymentOptionsView"]):
+    """Button to apply promo code."""
+    
+    def __init__(self, cog_instance, product_id: int, base_price_cents: int, current_discount: float, payment_view):
+        super().__init__(
+            label="🎟️ Apply Promo Code",
+            style=discord.ButtonStyle.secondary,
+            emoji="🎟️"
+        )
+        self.cog = cog_instance
+        self.product_id = product_id
+        self.base_price_cents = base_price_cents
+        self.current_discount = current_discount
+        self.payment_view = payment_view
+    
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Show promo code modal."""
+        from apex_core.logger import get_logger
+        logger = get_logger()
+        
+        logger.info(f"Promo code button clicked | User: {interaction.user.id} | Product: {self.product_id}")
+        
+        modal = PromoCodeModal(self.cog, self.product_id, self.base_price_cents, self.current_discount, self.payment_view)
+        await interaction.response.send_modal(modal)
+
+
 class PaymentOptionsView(discord.ui.View):
     def __init__(
         self,
@@ -838,8 +1083,26 @@ class PaymentOptionsView(discord.ui.View):
         final_price_cents: int,
         user_balance_cents: int,
         payment_methods: list,
+        cog_instance=None,
+        base_price_cents: int = 0,
+        current_discount: float = 0.0,
+        payment_message: Optional[discord.Message] = None,
     ) -> None:
         super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.base_price_cents = base_price_cents
+        self.current_discount = current_discount
+        self.product_id = product_id
+        self.final_price_cents = final_price_cents
+        self.user_balance_cents = user_balance_cents
+        self.payment_methods = payment_methods
+        self.payment_message = payment_message
+        self.applied_promo_code: Optional[str] = None
+        self.promo_discount_cents: int = 0
+        
+        # Add promo code button
+        if cog_instance:
+            self.add_item(PromoCodeButton(cog_instance, product_id, base_price_cents, current_discount, self))
         
         # Check if wallet is enabled and add wallet button if user has sufficient balance
         has_wallet_method = any(
@@ -854,6 +1117,7 @@ class PaymentOptionsView(discord.ui.View):
                 final_price_cents=final_price_cents,
                 user_balance_cents=user_balance_cents,
                 sufficient=sufficient,
+                payment_view=self,
             ))
         
         # Add payment proof upload button
@@ -1007,6 +1271,76 @@ class ProductActionView(discord.ui.View):
         self.product_id = product_id
         self.add_item(BuyButton(product_id))
         self.add_item(TicketButton(product_id))
+
+
+class ProductCustomizationModal(discord.ui.Modal, title="Product Details"):
+    """Modal to collect product customization info."""
+    
+    def __init__(self, product_name: str, product_id: int, main_category: str, sub_category: str):
+        super().__init__()
+        self.product_name = product_name
+        self.product_id = product_id
+        self.main_category = main_category
+        self.sub_category = sub_category
+        
+        self.target_url = discord.ui.TextInput(
+            label="Target URL",
+            placeholder="Enter Instagram post URL, YouTube video URL, etc.",
+            required=True,
+            max_length=500
+        )
+        self.add_item(self.target_url)
+        
+        self.username = discord.ui.TextInput(
+            label="Username/Handle",
+            placeholder="Your social media username (if applicable)",
+            required=False,
+            max_length=100
+        )
+        self.add_item(self.username)
+        
+        self.special_instructions = discord.ui.TextInput(
+            label="Special Instructions",
+            style=discord.TextStyle.paragraph,
+            placeholder="Any special instructions or notes...",
+            required=False,
+            max_length=1000
+        )
+        self.add_item(self.special_instructions)
+    
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        """Store customization data and proceed with ticket creation."""
+        from apex_core.logger import get_logger
+        logger = get_logger()
+        
+        customization_data = {
+            "target_url": self.target_url.value,
+            "username": self.username.value if self.username.value else None,
+            "special_instructions": self.special_instructions.value if self.special_instructions.value else None
+        }
+        
+        logger.info(
+            f"Product customization submitted | User: {interaction.user.id} | "
+            f"Product: {self.product_name} | URL: {self.target_url.value[:50]}..."
+        )
+        
+        # Proceed with ticket creation with customization data
+        await interaction.response.defer(ephemeral=True)
+        
+        cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")  # type: ignore
+        if not cog:
+            await interaction.followup.send(
+                "Storefront cog not loaded.", ephemeral=True
+            )
+            return
+        
+        await cog._handle_open_ticket(
+            interaction,
+            self.main_category,
+            self.sub_category,
+            self.product_id,
+            customization_data=customization_data,
+        )
 
 
 class PurchaseConfirmModal(discord.ui.Modal):
@@ -1178,9 +1512,21 @@ class StorefrontCog(commands.Cog):
             refill_period = product.get("refill_period") or "N/A"
             additional_info = product.get("additional_info") or "N/A"
             
+            # Add stock status
+            stock = product.get("stock_quantity")
+            if stock is None:
+                stock_status = "🟢 In Stock (Unlimited)"
+            elif stock == 0:
+                stock_status = "🔴 Out of Stock"
+            elif stock <= 10:
+                stock_status = f"🟡 Low Stock ({stock} left)"
+            else:
+                stock_status = f"🟢 In Stock ({stock} available)"
+            
             product_text = (
                 f"**{variant_name}**\n"
                 f"Price: {price_usd}\n"
+                f"Stock: {stock_status}\n"
                 f"Start Time: {start_time}\n"
                 f"Duration: {duration}\n"
                 f"Refill: {refill_period}\n"
@@ -1225,6 +1571,24 @@ class StorefrontCog(commands.Cog):
                 "The selected product is no longer available.",
                 ephemeral=True,
             )
+            return
+        
+        # Check stock availability
+        stock = product.get("stock_quantity")
+        if stock is not None and stock == 0:
+            from apex_core.utils.error_messages import get_error_message
+            error_msg = get_error_message("out_of_stock")
+            await interaction.followup.send(error_msg, ephemeral=True)
+            return
+        
+        if stock is not None and stock < 1:
+            from apex_core.utils.error_messages import get_error_message
+            error_msg = get_error_message(
+                "insufficient_stock",
+                available_quantity=stock,
+                requested_quantity=1
+            )
+            await interaction.followup.send(error_msg, ephemeral=True)
             return
         
         if (
@@ -1358,6 +1722,9 @@ class StorefrontCog(commands.Cog):
             final_price_cents=final_price_cents,
             user_balance_cents=user_balance_cents,
             payment_methods=enabled_methods,
+            cog_instance=self,
+            base_price_cents=product["price_cents"],
+            current_discount=discount_percent,
         )
         
         price_text = format_usd(product["price_cents"])
@@ -1376,15 +1743,27 @@ class StorefrontCog(commands.Cog):
             ),
             color=discord.Color.blue(),
         )
+        product_details = (
+            f"**Service:** {product['service_name']}\n"
+            f"**Variant:** {product['variant_name']}\n"
+            f"**Base Price:** {price_text}\n"
+            f"**Final Price:** {format_usd(final_price_cents)}\n"
+            f"**Discount:** {discount_percent:.1f}%"
+        )
+        
+        # Add customization data if provided
+        if customization_data:
+            product_details += "\n\n**📝 Customization Details:**"
+            if customization_data.get("target_url"):
+                product_details += f"\n• **Target URL:** {customization_data['target_url']}"
+            if customization_data.get("username"):
+                product_details += f"\n• **Username:** {customization_data['username']}"
+            if customization_data.get("special_instructions"):
+                product_details += f"\n• **Instructions:** {customization_data['special_instructions'][:200]}"
+        
         owner_embed.add_field(
             name="📋 Product Details",
-            value=(
-                f"**Service:** {product['service_name']}\n"
-                f"**Variant:** {product['variant_name']}\n"
-                f"**Base Price:** {price_text}\n"
-                f"**Final Price:** {format_usd(final_price_cents)}\n"
-                f"**Discount:** {discount_percent:.1f}%"
-            ),
+            value=product_details,
             inline=False,
         )
         owner_embed.add_field(
@@ -1424,11 +1803,14 @@ class StorefrontCog(commands.Cog):
             embed=owner_embed,
         )
         
-        await channel.send(
+        payment_message = await channel.send(
             content=f"{member.mention}",
             embed=payment_embed,
             view=payment_view,
         )
+        
+        # Store payment message in view for promo code updates
+        payment_view.payment_message = payment_message
 
         try:
             dm_embed = create_embed(
@@ -1553,6 +1935,13 @@ class StorefrontCog(commands.Cog):
                 discount_applied_percent=discount_percent,
                 order_metadata=order_metadata,
             )
+            
+            # Decrease stock after successful purchase
+            stock = product.get("stock_quantity")
+            if stock is not None:
+                success = await self.bot.db.decrease_product_stock(product_id, 1)
+                if not success:
+                    logger.error(f"Failed to decrease stock for product {product_id} after purchase {order_id}")
         except ValueError as e:
             await interaction.followup.send(
                 f"Purchase failed: {str(e)}", ephemeral=True

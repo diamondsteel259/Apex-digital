@@ -24,7 +24,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 13
+        self.target_schema_version = 19
         
         if connect_timeout is None:
             connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "5.0"))
@@ -150,6 +150,12 @@ class Database:
             11: ("permanent_messages_table", self._migration_v11),
             12: ("wallet_transactions_user_created_index", self._migration_v12),
             13: ("setup_sessions_table", self._migration_v13),
+            14: ("inventory_stock_tracking", self._migration_v14),
+            15: ("promo_codes_system", self._migration_v15),
+            16: ("gift_system", self._migration_v16),
+            17: ("announcements_table", self._migration_v17),
+            18: ("orders_status_tracking", self._migration_v18),
+            19: ("reviews_system", self._migration_v19),
         }
 
         for version in sorted(migrations.keys()):
@@ -3003,3 +3009,1076 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ==================== INVENTORY MANAGEMENT METHODS ====================
+    
+    async def update_product_stock(self, product_id: int, quantity: Optional[int]) -> bool:
+        """Update product stock quantity.
+        
+        Args:
+            product_id: Product ID
+            quantity: Stock quantity (None for unlimited)
+            
+        Returns:
+            True if updated successfully
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.execute(
+            "UPDATE products SET stock_quantity = ? WHERE id = ?",
+            (quantity, product_id)
+        )
+        await self._connection.commit()
+        return True
+
+    async def decrease_product_stock(self, product_id: int, amount: int = 1) -> bool:
+        """Decrease product stock by amount. Returns False if insufficient stock.
+        
+        Args:
+            product_id: Product ID
+            amount: Quantity to decrease (default 1)
+            
+        Returns:
+            True if stock decreased successfully, False if insufficient stock
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        async with self._wallet_lock:  # Use lock for atomic stock operations
+            product = await self.get_product(product_id)
+            if not product:
+                return False
+            
+            stock = product.get("stock_quantity")
+            
+            # NULL stock = unlimited
+            if stock is None:
+                return True
+            
+            # Check if sufficient stock
+            if stock < amount:
+                return False
+            
+            # Decrease stock
+            new_stock = stock - amount
+            await self._connection.execute(
+                "UPDATE products SET stock_quantity = ? WHERE id = ?",
+                (new_stock, product_id)
+            )
+            await self._connection.commit()
+            return True
+
+    async def get_low_stock_products(self, threshold: int = 10) -> list[aiosqlite.Row]:
+        """Get products with low stock.
+        
+        Args:
+            threshold: Stock level threshold
+            
+        Returns:
+            List of products with stock <= threshold
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM products
+            WHERE stock_quantity IS NOT NULL
+              AND stock_quantity > 0
+              AND stock_quantity <= ?
+              AND is_active = 1
+            ORDER BY stock_quantity ASC
+            """,
+            (threshold,)
+        )
+        return await cursor.fetchall()
+
+    async def get_out_of_stock_products(self) -> list[aiosqlite.Row]:
+        """Get products that are out of stock.
+        
+        Returns:
+            List of products with stock_quantity = 0
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM products
+            WHERE stock_quantity = 0
+              AND is_active = 1
+            ORDER BY variant_name ASC
+            """
+        )
+        return await cursor.fetchall()
+
+    # ==================== PROMO CODE METHODS ====================
+    
+    async def create_promo_code(
+        self,
+        *,
+        code: str,
+        code_type: str,
+        discount_value: float,
+        free_product_id: Optional[int] = None,
+        description: Optional[str] = None,
+        max_uses: Optional[int] = None,
+        max_uses_per_user: int = 1,
+        minimum_purchase_cents: int = 0,
+        applicable_categories: Optional[str] = None,
+        applicable_products: Optional[str] = None,
+        first_time_only: bool = False,
+        starts_at: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        is_active: bool = True,
+        is_stackable: bool = False,
+        created_by_staff_id: int,
+    ) -> int:
+        """Create a new promo code.
+        
+        Returns:
+            Promo code ID
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO promo_codes (
+                code, code_type, discount_value, free_product_id, description,
+                max_uses, max_uses_per_user, minimum_purchase_cents,
+                applicable_categories, applicable_products, first_time_only,
+                starts_at, expires_at, is_active, is_stackable, created_by_staff_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                code.upper(), code_type, discount_value, free_product_id, description,
+                max_uses, max_uses_per_user, minimum_purchase_cents,
+                applicable_categories, applicable_products, 1 if first_time_only else 0,
+                starts_at, expires_at, 1 if is_active else 0, 1 if is_stackable else 0,
+                created_by_staff_id
+            )
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def get_promo_code(self, code: str) -> Optional[aiosqlite.Row]:
+        """Get promo code by code string."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM promo_codes WHERE code = ? COLLATE NOCASE",
+            (code.upper(),)
+        )
+        return await cursor.fetchone()
+
+    async def get_all_promo_codes(self, active_only: bool = False) -> list[aiosqlite.Row]:
+        """Get all promo codes."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        query = "SELECT * FROM promo_codes"
+        if active_only:
+            query += " WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
+        query += " ORDER BY created_at DESC"
+        
+        cursor = await self._connection.execute(query)
+        return await cursor.fetchall()
+
+    async def validate_promo_code(
+        self,
+        code: str,
+        user_id: int,
+        order_amount_cents: int,
+        product_id: Optional[int] = None,
+    ) -> tuple[bool, str, int]:
+        """Validate promo code and calculate discount.
+        
+        Returns:
+            Tuple of (is_valid, error_message, discount_cents)
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        promo = await self.get_promo_code(code)
+        if not promo:
+            return False, "Invalid promo code", 0
+        
+        if not promo["is_active"]:
+            return False, "Promo code is inactive", 0
+        
+        # Check expiration
+        if promo["expires_at"]:
+            from datetime import datetime
+            expires = datetime.fromisoformat(promo["expires_at"])
+            if datetime.now() > expires:
+                return False, "Promo code has expired", 0
+        
+        # Check start date
+        if promo["starts_at"]:
+            from datetime import datetime
+            starts = datetime.fromisoformat(promo["starts_at"])
+            if datetime.now() < starts:
+                return False, "Promo code is not yet active", 0
+        
+        # Check max uses
+        if promo["max_uses"] and promo["current_uses"] >= promo["max_uses"]:
+            return False, "Promo code has reached maximum uses", 0
+        
+        # Check minimum purchase
+        if order_amount_cents < promo["minimum_purchase_cents"]:
+            return False, f"Minimum purchase of ${promo['minimum_purchase_cents']/100:.2f} required", 0
+        
+        # Check user usage limit
+        cursor = await self._connection.execute(
+            """
+            SELECT COUNT(*) as count FROM promo_code_usage
+            WHERE code_id = ? AND user_discord_id = ?
+            """,
+            (promo["id"], user_id)
+        )
+        usage_row = await cursor.fetchone()
+        user_uses = usage_row["count"] if usage_row else 0
+        
+        if user_uses >= promo["max_uses_per_user"]:
+            return False, "You have already used this promo code the maximum number of times", 0
+        
+        # Check first-time buyer restriction
+        if promo["first_time_only"]:
+            cursor = await self._connection.execute(
+                "SELECT COUNT(*) as count FROM orders WHERE user_discord_id = ?",
+                (user_id,)
+            )
+            order_row = await cursor.fetchone()
+            if order_row and order_row["count"] > 0:
+                return False, "This promo code is only for first-time buyers", 0
+        
+        # Calculate discount
+        discount_cents = 0
+        if promo["code_type"] == "percentage":
+            discount_cents = int(order_amount_cents * (promo["discount_value"] / 100))
+        elif promo["code_type"] == "fixed_amount":
+            discount_cents = int(promo["discount_value"] * 100)  # Convert dollars to cents
+            if discount_cents > order_amount_cents:
+                discount_cents = order_amount_cents  # Can't discount more than order total
+        
+        return True, "", discount_cents
+
+    async def use_promo_code(
+        self,
+        code: str,
+        user_id: int,
+        order_id: int,
+        discount_cents: int,
+    ) -> None:
+        """Record promo code usage."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        promo = await self.get_promo_code(code)
+        if not promo:
+            raise ValueError("Promo code not found")
+        
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            # Record usage
+            await self._connection.execute(
+                """
+                INSERT INTO promo_code_usage (code_id, user_discord_id, order_id, discount_applied_cents)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(code_id, user_discord_id) DO NOTHING
+                """,
+                (promo["id"], user_id, order_id, discount_cents)
+            )
+            
+            # Increment usage count
+            await self._connection.execute(
+                "UPDATE promo_codes SET current_uses = current_uses + 1 WHERE id = ?",
+                (promo["id"],)
+            )
+            
+            await self._connection.commit()
+
+    async def deactivate_promo_code(self, code: str) -> bool:
+        """Deactivate a promo code."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "UPDATE promo_codes SET is_active = 0 WHERE code = ? COLLATE NOCASE",
+            (code.upper(),)
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def delete_promo_code(self, code: str) -> bool:
+        """Delete a promo code permanently."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "DELETE FROM promo_codes WHERE code = ? COLLATE NOCASE",
+            (code.upper(),)
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def get_promo_code_usage_stats(self, code: str) -> dict:
+        """Get usage statistics for a promo code."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        promo = await self.get_promo_code(code)
+        if not promo:
+            return {}
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                COUNT(*) as total_uses,
+                COUNT(DISTINCT user_discord_id) as unique_users,
+                SUM(discount_applied_cents) as total_discount_cents
+            FROM promo_code_usage
+            WHERE code_id = ?
+            """,
+            (promo["id"],)
+        )
+        stats = await cursor.fetchone()
+        
+        return {
+            "code": promo["code"],
+            "current_uses": promo["current_uses"],
+            "max_uses": promo["max_uses"],
+            "total_uses": stats["total_uses"] if stats else 0,
+            "unique_users": stats["unique_users"] if stats else 0,
+            "total_discount_cents": stats["total_discount_cents"] if stats else 0,
+        }
+
+    # ==================== GIFT SYSTEM METHODS ====================
+    
+    async def create_gift(
+        self,
+        *,
+        gift_type: str,
+        sender_discord_id: int,
+        recipient_discord_id: Optional[int] = None,
+        product_id: Optional[int] = None,
+        wallet_amount_cents: Optional[int] = None,
+        gift_code: Optional[str] = None,
+        gift_message: Optional[str] = None,
+        anonymous: bool = False,
+        expires_at: Optional[str] = None,
+    ) -> int:
+        """Create a new gift.
+        
+        Returns:
+            Gift ID
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO gifts (
+                gift_type, sender_discord_id, recipient_discord_id,
+                product_id, wallet_amount_cents, gift_code, gift_message,
+                anonymous, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                gift_type, sender_discord_id, recipient_discord_id,
+                product_id, wallet_amount_cents, gift_code, gift_message,
+                1 if anonymous else 0, expires_at
+            )
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def get_gift_by_code(self, code: str) -> Optional[aiosqlite.Row]:
+        """Get gift by gift code."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM gifts WHERE gift_code = ?",
+            (code,)
+        )
+        return await cursor.fetchone()
+
+    async def claim_gift(self, gift_id: int, user_id: int) -> bool:
+        """Claim a gift.
+        
+        Returns:
+            True if claimed successfully
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            # Get gift
+            cursor = await self._connection.execute(
+                "SELECT * FROM gifts WHERE id = ? AND status = 'pending'",
+                (gift_id,)
+            )
+            gift = await cursor.fetchone()
+            
+            if not gift:
+                await self._connection.rollback()
+                return False
+            
+            # Check expiration
+            if gift["expires_at"]:
+                from datetime import datetime
+                expires = datetime.fromisoformat(gift["expires_at"])
+                if datetime.now() > expires:
+                    await self._connection.rollback()
+                    return False
+            
+            # Update gift status
+            await self._connection.execute(
+                """
+                UPDATE gifts
+                SET status = 'claimed',
+                    claimed_at = CURRENT_TIMESTAMP,
+                    claimed_by_user_id = ?
+                WHERE id = ?
+                """,
+                (user_id, gift_id)
+            )
+            
+            # Apply gift
+            if gift["gift_type"] == "wallet" and gift["wallet_amount_cents"]:
+                await self.update_wallet_balance(user_id, gift["wallet_amount_cents"])
+            
+            await self._connection.commit()
+            return True
+
+    async def get_user_gifts_sent(self, user_id: int) -> list[aiosqlite.Row]:
+        """Get gifts sent by a user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM gifts
+            WHERE sender_discord_id = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id,)
+        )
+        return await cursor.fetchall()
+
+    async def get_user_gifts_received(self, user_id: int) -> list[aiosqlite.Row]:
+        """Get gifts received by a user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM gifts
+            WHERE recipient_discord_id = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id,)
+        )
+        return await cursor.fetchall()
+
+    async def cancel_gift(self, gift_id: int) -> bool:
+        """Cancel a pending gift."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "UPDATE gifts SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+            (gift_id,)
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    # ==================== ORDER STATUS METHODS ====================
+    
+    async def update_order_status(
+        self,
+        order_id: int,
+        status: str,
+        estimated_delivery: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[aiosqlite.Row]:
+        """Update order status and return the order row.
+        
+        Used to fetch user_id for notifications.
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.execute(
+            """
+            UPDATE orders
+            SET status = ?,
+                estimated_delivery = ?,
+                status_notes = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, estimated_delivery, notes, order_id)
+        )
+        await self._connection.commit()
+        
+        return await self.get_order_by_id(order_id)
+
+    async def get_order_by_id(self, order_id: int) -> Optional[aiosqlite.Row]:
+        """Get order by ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM orders WHERE id = ?",
+            (order_id,)
+        )
+        return await cursor.fetchone()
+
+    # ==================== ANNOUNCEMENT METHODS ====================
+    
+    async def create_announcement(
+        self,
+        *,
+        title: str,
+        message: str,
+        announcement_type: str,
+        target_role_id: Optional[int] = None,
+        target_vip_tier: Optional[str] = None,
+        delivery_method: str,
+        channel_id: Optional[int] = None,
+        created_by_staff_id: int,
+        scheduled_for: Optional[str] = None,
+    ) -> int:
+        """Create an announcement record.
+        
+        Returns:
+            Announcement ID
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO announcements (
+                title, message, announcement_type, target_role_id, target_vip_tier,
+                delivery_method, channel_id, created_by_staff_id, scheduled_for
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title, message, announcement_type, target_role_id, target_vip_tier,
+                delivery_method, channel_id, created_by_staff_id, scheduled_for
+            )
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def update_announcement_stats(
+        self,
+        announcement_id: int,
+        total_recipients: int,
+        successful_deliveries: int,
+        failed_deliveries: int,
+    ) -> None:
+        """Update announcement delivery statistics."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.execute(
+            """
+            UPDATE announcements
+            SET total_recipients = ?,
+                successful_deliveries = ?,
+                failed_deliveries = ?,
+                sent_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (total_recipients, successful_deliveries, failed_deliveries, announcement_id)
+        )
+        await self._connection.commit()
+
+    async def get_announcements(
+        self,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> list[aiosqlite.Row]:
+        """Get announcement history."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM announcements
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
+        return await cursor.fetchall()
+
+    async def _migration_v14(self) -> None:
+        """Migration v14: Add stock tracking to products table."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        # Check if column already exists
+        cursor = await self._connection.execute("PRAGMA table_info(products)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        
+        if "stock_quantity" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE products ADD COLUMN stock_quantity INTEGER DEFAULT NULL"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_products_stock ON products(stock_quantity) WHERE stock_quantity IS NOT NULL"
+            )
+            await self._connection.commit()
+            logger.info("Added stock_quantity column to products table")
+
+    async def _migration_v15(self) -> None:
+        """Migration v15: Create promo codes system tables."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS promo_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                code_type TEXT NOT NULL,
+                discount_value REAL NOT NULL,
+                free_product_id INTEGER,
+                description TEXT,
+                max_uses INTEGER DEFAULT NULL,
+                max_uses_per_user INTEGER DEFAULT 1,
+                current_uses INTEGER DEFAULT 0,
+                minimum_purchase_cents INTEGER DEFAULT 0,
+                applicable_categories TEXT,
+                applicable_products TEXT,
+                first_time_only BOOLEAN DEFAULT 0,
+                starts_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP DEFAULT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                is_stackable BOOLEAN DEFAULT 0,
+                created_by_staff_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(free_product_id) REFERENCES products(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS promo_code_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id INTEGER NOT NULL,
+                user_discord_id INTEGER NOT NULL,
+                order_id INTEGER NOT NULL,
+                discount_applied_cents INTEGER NOT NULL,
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(code_id) REFERENCES promo_codes(id) ON DELETE CASCADE,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code);
+            CREATE INDEX IF NOT EXISTS idx_promo_codes_active ON promo_codes(is_active, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_promo_code_usage_user ON promo_code_usage(user_discord_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_code_usage_unique ON promo_code_usage(code_id, user_discord_id);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created promo codes system tables")
+
+    async def _migration_v16(self) -> None:
+        """Migration v16: Create gift system tables."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS gifts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gift_type TEXT NOT NULL,
+                sender_discord_id INTEGER NOT NULL,
+                recipient_discord_id INTEGER,
+                product_id INTEGER,
+                wallet_amount_cents INTEGER,
+                gift_code TEXT UNIQUE,
+                gift_message TEXT,
+                anonymous BOOLEAN DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                claimed_at TIMESTAMP,
+                claimed_by_user_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gifts_recipient ON gifts(recipient_discord_id, status);
+            CREATE INDEX IF NOT EXISTS idx_gifts_code ON gifts(gift_code) WHERE gift_code IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_gifts_sender ON gifts(sender_discord_id);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created gift system tables")
+
+    async def _migration_v17(self) -> None:
+        """Migration v17: Create announcements table."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                announcement_type TEXT NOT NULL,
+                target_role_id INTEGER,
+                target_vip_tier TEXT,
+                delivery_method TEXT NOT NULL,
+                channel_id INTEGER,
+                total_recipients INTEGER DEFAULT 0,
+                successful_deliveries INTEGER DEFAULT 0,
+                failed_deliveries INTEGER DEFAULT 0,
+                created_by_staff_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                scheduled_for TIMESTAMP,
+                sent_at TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_announcements_created ON announcements(created_at);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created announcements table")
+
+    async def _migration_v19(self) -> None:
+        """Migration v19: Create reviews system table."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                order_id INTEGER NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT NOT NULL,
+                photo_url TEXT,
+                status TEXT DEFAULT 'pending',
+                reviewed_by_staff_id INTEGER,
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_reviews_order ON reviews(order_id);
+            CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
+            CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created reviews system table")
+
+    # ==================== REVIEW SYSTEM METHODS ====================
+    
+    async def create_review(
+        self,
+        *,
+        user_discord_id: int,
+        order_id: int,
+        rating: int,
+        comment: str,
+        photo_url: Optional[str] = None,
+    ) -> int:
+        """Create a new review.
+        
+        Returns:
+            Review ID
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        # Validate rating
+        if not 1 <= rating <= 5:
+            raise ValueError("Rating must be between 1 and 5")
+        
+        # Validate comment length
+        if len(comment) < 50 or len(comment) > 1000:
+            raise ValueError("Comment must be between 50 and 1000 characters")
+        
+        # Check if user already reviewed this order
+        cursor = await self._connection.execute(
+            "SELECT id FROM reviews WHERE user_discord_id = ? AND order_id = ?",
+            (user_discord_id, order_id)
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            raise ValueError("You have already submitted a review for this order")
+        
+        # Check if order exists and belongs to user
+        order = await self.get_order_by_id(order_id)
+        if not order:
+            raise ValueError("Order not found")
+        
+        if order["user_discord_id"] != user_discord_id:
+            raise ValueError("You can only review your own orders")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO reviews (user_discord_id, order_id, rating, comment, photo_url, status)
+            VALUES (?, ?, ?, ?, ?, 'pending')
+            """,
+            (user_discord_id, order_id, rating, comment, photo_url)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+
+    async def get_review(self, review_id: int) -> Optional[aiosqlite.Row]:
+        """Get review by ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM reviews WHERE id = ?",
+            (review_id,)
+        )
+        return await cursor.fetchone()
+
+    async def get_reviews_by_user(
+        self,
+        user_discord_id: int,
+        *,
+        status: Optional[str] = None
+    ) -> list[aiosqlite.Row]:
+        """Get reviews by user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        query = "SELECT * FROM reviews WHERE user_discord_id = ?"
+        params: list[Any] = [user_discord_id]
+        
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        
+        query += " ORDER BY created_at DESC"
+        
+        cursor = await self._connection.execute(query, params)
+        return await cursor.fetchall()
+
+    async def get_pending_reviews(self, *, limit: int = 50) -> list[aiosqlite.Row]:
+        """Get pending reviews for admin approval."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM reviews
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        return await cursor.fetchall()
+
+    async def approve_review(
+        self,
+        review_id: int,
+        staff_discord_id: int
+    ) -> bool:
+        """Approve a review and award rewards.
+        
+        Returns:
+            True if approved successfully
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        async with self._wallet_lock:
+            await self._connection.execute("BEGIN IMMEDIATE;")
+            
+            # Get review
+            review = await self.get_review(review_id)
+            if not review or review["status"] != "pending":
+                await self._connection.rollback()
+                return False
+            
+            # Update review status
+            await self._connection.execute(
+                """
+                UPDATE reviews
+                SET status = 'approved',
+                    reviewed_by_staff_id = ?,
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (staff_discord_id, review_id)
+            )
+            
+            # Award Apex Insider role if configured
+            # This would need to be handled in the cog to access guild
+            
+            await self._connection.commit()
+            return True
+
+    async def reject_review(
+        self,
+        review_id: int,
+        staff_discord_id: int,
+        reason: Optional[str] = None
+    ) -> bool:
+        """Reject a review.
+        
+        Returns:
+            True if rejected successfully
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        review = await self.get_review(review_id)
+        if not review or review["status"] != "pending":
+            return False
+        
+        await self._connection.execute(
+            """
+            UPDATE reviews
+            SET status = 'rejected',
+                reviewed_by_staff_id = ?,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (staff_discord_id, review_id)
+        )
+        await self._connection.commit()
+        return True
+
+    async def get_reviews_by_product(
+        self,
+        product_id: int,
+        *,
+        approved_only: bool = True,
+        limit: int = 20
+    ) -> list[aiosqlite.Row]:
+        """Get reviews for a specific product.
+        
+        Args:
+            product_id: Product ID
+            approved_only: Only return approved reviews
+            limit: Maximum number of reviews to return
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        query = """
+            SELECT r.* FROM reviews r
+            INNER JOIN orders o ON r.order_id = o.id
+            WHERE o.product_id = ?
+        """
+        params: list[Any] = [product_id]
+        
+        if approved_only:
+            query += " AND r.status = 'approved'"
+        
+        query += " ORDER BY r.created_at DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor = await self._connection.execute(query, params)
+        return await cursor.fetchall()
+
+    async def get_review_stats(self, product_id: Optional[int] = None) -> dict:
+        """Get review statistics.
+        
+        Args:
+            product_id: Optional product ID to filter by
+        
+        Returns:
+            Dictionary with review statistics
+        """
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        if product_id:
+            query = """
+                SELECT 
+                    COUNT(*) as total_reviews,
+                    AVG(rating) as avg_rating,
+                    COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
+                    COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
+                    COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
+                    COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
+                    COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star
+                FROM reviews r
+                INNER JOIN orders o ON r.order_id = o.id
+                WHERE o.product_id = ? AND r.status = 'approved'
+            """
+            cursor = await self._connection.execute(query, (product_id,))
+        else:
+            query = """
+                SELECT 
+                    COUNT(*) as total_reviews,
+                    AVG(rating) as avg_rating,
+                    COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
+                    COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
+                    COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
+                    COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
+                    COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star
+                FROM reviews
+                WHERE status = 'approved'
+            """
+            cursor = await self._connection.execute(query)
+        
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "total_reviews": row["total_reviews"] or 0,
+                "avg_rating": round(row["avg_rating"] or 0, 2),
+                "five_star": row["five_star"] or 0,
+                "four_star": row["four_star"] or 0,
+                "three_star": row["three_star"] or 0,
+                "two_star": row["two_star"] or 0,
+                "one_star": row["one_star"] or 0,
+            }
+        return {
+            "total_reviews": 0,
+            "avg_rating": 0.0,
+            "five_star": 0,
+            "four_star": 0,
+            "three_star": 0,
+            "two_star": 0,
+            "one_star": 0,
+        }
+
+    async def _migration_v18(self) -> None:
+        """Migration v18: Add status tracking to orders table."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        # Check if status column already exists
+        cursor = await self._connection.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        
+        if "status" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'pending'"
+            )
+            await self._connection.execute(
+                "ALTER TABLE orders ADD COLUMN estimated_delivery TEXT"
+            )
+            await self._connection.execute(
+                "ALTER TABLE orders ADD COLUMN status_notes TEXT"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)"
+            )
+            await self._connection.commit()
+            logger.info("Added status tracking columns to orders table")
