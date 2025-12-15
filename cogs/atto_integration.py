@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import re
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Optional, List
 from collections import deque
 import time
@@ -356,7 +356,15 @@ class AttoIntegrationCog(commands.Cog):
                             continue
                         
                         # Calculate cashback (10%)
-                        cashback_raw = str(int(int(amount_raw) * (DEPOSIT_CASHBACK_PERCENT / 100)))
+                        cashback_raw = str(
+                            int(
+                                (
+                                    Decimal(amount_raw)
+                                    * Decimal(str(DEPOSIT_CASHBACK_PERCENT))
+                                    / Decimal("100")
+                                ).to_integral_value(rounding=ROUND_DOWN)
+                            )
+                        )
                         
                         # Add balance + cashback
                         await self.bot.db.add_atto_balance(user_id, amount_raw, cashback_raw)
@@ -408,12 +416,13 @@ class AttoIntegrationCog(commands.Cog):
         
         try:
             # Get or create balance record
-            balance = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance_row = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance = dict(balance_row) if balance_row and not isinstance(balance_row, dict) else balance_row
             if not balance:
                 memo = f"USER_{interaction.user.id}"
                 await self.bot.db.create_atto_balance(interaction.user.id, memo)
             else:
-                memo = balance.get("deposit_memo", f"USER_{interaction.user.id}")
+                memo = balance.get("deposit_memo") or f"USER_{interaction.user.id}"
             
             # Get main wallet address
             main_address = await self.bot.db.get_main_wallet_address()
@@ -477,16 +486,17 @@ class AttoIntegrationCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            balance = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance_row = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance = dict(balance_row) if balance_row and not isinstance(balance_row, dict) else balance_row
             
             if not balance:
                 balance_raw = "0"
                 total_deposited = "0"
                 total_withdrawn = "0"
             else:
-                balance_raw = balance.get("balance_raw", "0")
-                total_deposited = balance.get("total_deposited_raw", "0")
-                total_withdrawn = balance.get("total_withdrawn_raw", "0")
+                balance_raw = balance.get("balance_raw") or "0"
+                total_deposited = balance.get("total_deposited_raw") or "0"
+                total_withdrawn = balance.get("total_withdrawn_raw") or "0"
             
             # Get price and convert
             price_usd = await _get_atto_price_usd()
@@ -620,7 +630,8 @@ class AttoIntegrationCog(commands.Cog):
         
         try:
             # Get order
-            order = await self.bot.db.get_order_by_id(order_id)
+            order_row = await self.bot.db.get_order_by_id(order_id)
+            order = dict(order_row) if order_row and not isinstance(order_row, dict) else order_row
             if not order:
                 await interaction.followup.send("❌ Order not found.", ephemeral=True)
                 return
@@ -636,7 +647,7 @@ class AttoIntegrationCog(commands.Cog):
                 )
                 return
             
-            order_price_cents = order.get("price_paid_cents", 0)
+            order_price_cents = int(order.get("price_paid_cents") or 0)
             
             # Show choice view
             embed = create_embed(
@@ -674,13 +685,15 @@ class AttoIntegrationCog(commands.Cog):
         """Process Atto payment with user's choice."""
         try:
             # Get order
-            order = await self.bot.db.get_order_by_id(order_id)
+            order_row = await self.bot.db.get_order_by_id(order_id)
+            order = dict(order_row) if order_row and not isinstance(order_row, dict) else order_row
             if not order or order["user_discord_id"] != interaction.user.id:
                 await interaction.followup.send("❌ Order not found.", ephemeral=True)
                 return
             
             # Get Atto balance
-            balance = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance_row = await self.bot.db.get_atto_balance(interaction.user.id)
+            balance = dict(balance_row) if balance_row and not isinstance(balance_row, dict) else balance_row
             if not balance:
                 await interaction.followup.send(
                     "❌ No Atto balance. Use `/attodeposit` to add funds.",
