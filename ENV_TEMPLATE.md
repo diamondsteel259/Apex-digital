@@ -32,7 +32,7 @@ ATTO_DEPOSIT_CHECK_INTERVAL=30
 # AI SUPPORT SYSTEM
 # ============================================
 # Gemini API Key (for Free and Ultra tiers)
-# Get from: https://makersuite.google.com/app/apikey
+# Get from: https://aistudio.google.com/app/apikey
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # Groq API Key (for Premium tier)
@@ -119,7 +119,7 @@ DB_CONNECT_TIMEOUT=5.0
   - Use `/attosetup` command after bot starts to set it
 
 ### **3. AI API Keys**
-- **Gemini:** https://makersuite.google.com/app/apikey
+- **Gemini:** https://aistudio.google.com/app/apikey
 - **Groq:** https://console.groq.com/keys
 
 ### **4. Payment Gateways**

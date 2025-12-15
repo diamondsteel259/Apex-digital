@@ -1,8 +1,29 @@
 # Optional dependencies for enhanced functionality
+# =================================================
 # Install with: pip install -r requirements-optional.txt
 
 # Chat transcript export with advanced formatting and styling
-chat-exporter>=2.8.0
+# Used by: apex_core/storage.py for enhanced transcript generation
+chat-exporter>=2.8.0,<3.0.0
 
 # AWS S3 storage for transcript archival
-boto3>=1.26.0
+# Used by: apex_core/storage.py for cloud backup of transcripts
+# Note: boto3 has frequent updates, upper bound may need adjustment
+boto3>=1.34.0,<2.0.0
+
+# Security Notes
+# ==============
+# boto3 updates frequently with AWS service additions
+# Safe to update within 1.x range
+# Always test S3 upload functionality after updating boto3
+
+# Usage
+# =====
+# These dependencies are optional and the bot will work without them:
+# - Without chat-exporter: Basic text-only transcripts will be used
+# - Without boto3: Transcripts will be stored locally only (no S3 backup)
+#
+# Install selectively:
+#   pip install chat-exporter  # For better transcripts only
+#   pip install boto3          # For S3 storage only
+#   pip install -r requirements-optional.txt  # For all optional features

@@ -1,4 +1,5 @@
 {
+  "_comment": "SECURITY: Use DISCORD_TOKEN environment variable instead of storing token here. See .env.example",
   "token": "YOUR_DISCORD_BOT_TOKEN_HERE",
   "bot_prefix": "!",
   "guild_ids": [
