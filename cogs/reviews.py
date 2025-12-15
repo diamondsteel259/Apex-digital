@@ -107,7 +107,8 @@ class ReviewsCog(commands.Cog):
             order = await self.bot.db.get_order_by_id(order_id)
             product = None
             if order and order["product_id"] != 0:
-                product = await self.bot.db.get_product(order["product_id"])
+                product_row = await self.bot.db.get_product(order["product_id"])
+                product = dict(product_row) if product_row and not isinstance(product_row, dict) else product_row
             
             embed = create_embed(
                 title="✅ Review Submitted!",
@@ -275,9 +276,10 @@ class ReviewsCog(commands.Cog):
                 product_name = "Unknown Product"
                 if order:
                     if order["product_id"] != 0:
-                        product = await self.bot.db.get_product(order["product_id"])
+                        product_row = await self.bot.db.get_product(order["product_id"])
+                        product = dict(product_row) if product_row and not isinstance(product_row, dict) else product_row
                         if product:
-                            product_name = product.get("variant_name", "Unknown")
+                            product_name = product.get("variant_name") or "Unknown"
                     else:
                         product_name = "Manual Order"
                 

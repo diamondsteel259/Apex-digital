@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
@@ -13,6 +13,15 @@ from apex_core.utils import create_embed, format_usd
 from apex_core.utils.permissions import is_admin_from_bot
 
 logger = get_logger()
+
+
+def _row_to_dict(row: Any) -> dict[str, Any] | None:
+    if row is None or isinstance(row, dict):
+        return row
+    try:
+        return dict(row)
+    except Exception:
+        return None
 
 
 class InventoryManagementCog(commands.Cog):
@@ -100,7 +109,8 @@ class InventoryManagementCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            product = await self.bot.db.get_product(product_id)
+            product_row = await self.bot.db.get_product(product_id)
+            product = _row_to_dict(product_row)
             if not product:
                 await interaction.followup.send(
                     f"❌ Product #{product_id} not found.",
@@ -162,7 +172,8 @@ class InventoryManagementCog(commands.Cog):
         try:
             if product_id:
                 # Check specific product
-                product = await self.bot.db.get_product(product_id)
+                product_row = await self.bot.db.get_product(product_id)
+                product = _row_to_dict(product_row)
                 if not product:
                     await interaction.followup.send(
                         f"❌ Product #{product_id} not found.",

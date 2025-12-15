@@ -103,7 +103,8 @@ class OrderManagementCog(commands.Cog):
         
         try:
             # Get current order
-            order = await self.bot.db.get_order_by_id(order_id)
+            order_row = await self.bot.db.get_order_by_id(order_id)
+            order = dict(order_row) if order_row and not isinstance(order_row, dict) else order_row
             if not order:
                 await interaction.followup.send(
                     f"❌ Order #{order_id} not found.",
@@ -111,7 +112,7 @@ class OrderManagementCog(commands.Cog):
                 )
                 return
             
-            old_status = order.get("status", "pending")
+            old_status = order.get("status") or "pending"
             
             # Update status
             updated_order = await self.bot.db.update_order_status(
@@ -128,8 +129,9 @@ class OrderManagementCog(commands.Cog):
                 automated_cog = self.bot.get_cog("AutomatedMessagesCog")
                 if automated_cog:
                     try:
-                        product = await self.bot.db.get_product(order["product_id"])
-                        product_name = product.get("variant_name", "Product") if product else "Product"
+                        product_row = await self.bot.db.get_product(order["product_id"])
+                        product = dict(product_row) if product_row and not isinstance(product_row, dict) else product_row
+                        product_name = (product.get("variant_name") if product else None) or "Product"
                         await automated_cog.send_order_status_update(
                             user_id=order["user_discord_id"],
                             order_id=order_id,
@@ -181,15 +183,14 @@ class OrderManagementCog(commands.Cog):
             
             # Add supplier info for admin (if product has supplier)
             if order["product_id"] != 0:
-                product = await self.bot.db.get_product(order["product_id"])
+                product_row = await self.bot.db.get_product(order["product_id"])
+                product = dict(product_row) if product_row and not isinstance(product_row, dict) else product_row
                 if product:
-                    # Check if supplier fields exist - use product dict directly
                     try:
-                        # product is a dict from database row
-                        if "supplier_id" in product and product.get("supplier_id"):
-                            supplier_name = product.get("supplier_name", "Unknown Supplier")
-                            supplier_service_id = product.get("supplier_service_id", "")
-                            supplier_api_url = product.get("supplier_api_url", "")
+                        if product.get("supplier_id"):
+                            supplier_name = product.get("supplier_name") or "Unknown Supplier"
+                            supplier_service_id = product.get("supplier_service_id") or ""
+                            supplier_api_url = product.get("supplier_api_url") or ""
                             
                             supplier_info = f"**Supplier:** {supplier_name}\n"
                             supplier_info += f"**Service ID:** {supplier_service_id}\n"

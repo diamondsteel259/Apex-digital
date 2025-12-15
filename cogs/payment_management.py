@@ -164,37 +164,32 @@ class PaymentManagementCog(commands.Cog):
         method_name: str
     ) -> None:
         """Edit an existing payment method."""
-        
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        # Load payment methods
+        # Load payment methods (fast local file read; no need to defer)
         if not PAYMENTS_CONFIG_PATH.exists():
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "❌ No payment methods found. Use `/addpayment` to create one.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-        
-        with open(PAYMENTS_CONFIG_PATH, 'r') as f:
+
+        with open(PAYMENTS_CONFIG_PATH, "r") as f:
             config = json.load(f)
-        
-        # Find method
+
         method = None
-        for m in config.get("payment_methods", []):
-            if m.get("name", "").lower() == method_name.lower():
-                method = m
+        for candidate in config.get("payment_methods", []):
+            if candidate.get("name", "").lower() == method_name.lower():
+                method = candidate
                 break
-        
+
         if not method:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 f"❌ Payment method '{method_name}' not found.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-        
+
         modal = PaymentMethodModal(existing_method=method)
-        await interaction.followup.send("Please fill out the form to edit the payment method:", ephemeral=True)
-        await interaction.followup.send_modal(modal)
+        await interaction.response.send_modal(modal)
     
     @app_commands.command(name="removepayment", description="Remove a payment method (admin only)")
     @app_commands.guild_only()

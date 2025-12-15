@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
@@ -13,6 +13,15 @@ from apex_core.utils import create_embed
 from apex_core.utils.permissions import is_admin_from_bot
 
 logger = get_logger()
+
+
+def _row_to_dict(row: Any) -> dict[str, Any] | None:
+    if row is None or isinstance(row, dict):
+        return row
+    try:
+        return dict(row)
+    except Exception:
+        return None
 
 
 class DataDeletionCog(commands.Cog):
@@ -60,7 +69,9 @@ class DataDeletionCog(commands.Cog):
             return
         
         # Get user data summary
-        user_data = await self.bot.db.get_user_by_discord_id(interaction.user.id)
+        await self.bot.db.ensure_user(interaction.user.id)
+        user_data_row = await self.bot.db.get_user(interaction.user.id)
+        user_data = _row_to_dict(user_data_row)
         
         if not user_data:
             embed = create_embed(
@@ -177,7 +188,9 @@ class DataDeletionCog(commands.Cog):
         logger.warning(f"Admin {interaction.user.id} processing data deletion for user {user.id}")
         
         # Get user data
-        user_data = await self.bot.db.get_user_by_discord_id(user.id)
+        await self.bot.db.ensure_user(user.id)
+        user_data_row = await self.bot.db.get_user(user.id)
+        user_data = _row_to_dict(user_data_row)
         
         if not user_data:
             embed = create_embed(

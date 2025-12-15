@@ -84,7 +84,9 @@ class NotificationsCog(commands.Cog):
                 color=discord.Color.orange(),
             )
 
-            for order in orders:
+            for order_row in orders:
+                order = dict(order_row) if not isinstance(order_row, dict) else order_row
+
                 # Get product info
                 product = None
                 if order["product_id"] != 0:

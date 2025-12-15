@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
@@ -15,6 +15,15 @@ from apex_core.utils import create_embed, format_usd
 from apex_core.logger import get_logger
 
 logger = get_logger()
+
+
+def _row_to_dict(row: Any) -> dict[str, Any] | None:
+    if row is None or isinstance(row, dict):
+        return row
+    try:
+        return dict(row)
+    except Exception:
+        return None
 
 
 class OrdersCog(commands.Cog):
@@ -41,6 +50,10 @@ class OrdersCog(commands.Cog):
         ticket: Optional[dict],
         user_mention: str,
     ) -> discord.Embed:
+        order = _row_to_dict(order) or {}
+        product = _row_to_dict(product) if product else None
+        ticket = _row_to_dict(ticket) if ticket else None
+
         is_manual = order["product_id"] == 0
         
         if is_manual:
@@ -167,9 +180,10 @@ class OrdersCog(commands.Cog):
         offset = (page - 1) * per_page
 
         logger.debug("Fetching orders | User: %s | Page: %s | Offset: %s", target.id, page, offset)
-        orders = await self.bot.db.get_orders_for_user(
+        order_rows = await self.bot.db.get_orders_for_user(
             target.id, limit=per_page, offset=offset
         )
+        orders = [dict(row) if not isinstance(row, dict) else row for row in order_rows]
         total_orders = await self.bot.db.count_orders_for_user(target.id)
         logger.debug("Orders fetched | User: %s | Count: %s | Total: %s", target.id, len(orders), total_orders)
 
@@ -414,7 +428,8 @@ class OrdersCog(commands.Cog):
 
         try:
             # Get the order first to verify it exists
-            order = await self.bot.db.get_order_by_id(order_id)
+            order_row = await self.bot.db.get_order_by_id(order_id)
+            order = dict(order_row) if order_row and not isinstance(order_row, dict) else order_row
             if not order:
                 await interaction.followup.send(
                     f"Order #{order_id} not found.", ephemeral=True
@@ -488,7 +503,8 @@ class OrdersCog(commands.Cog):
 
         try:
             # Get the order first to verify it exists
-            order = await self.bot.db.get_order_by_id(order_id)
+            order_row = await self.bot.db.get_order_by_id(order_id)
+            order = dict(order_row) if order_row and not isinstance(order_row, dict) else order_row
             if not order:
                 await interaction.followup.send(
                     f"Order #{order_id} not found.", ephemeral=True
@@ -557,7 +573,10 @@ class OrdersCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            expiring_orders = await self.bot.db.get_orders_expiring_soon(days)
+            expiring_order_rows = await self.bot.db.get_orders_expiring_soon(days)
+            expiring_orders = [
+                dict(row) if not isinstance(row, dict) else row for row in expiring_order_rows
+            ]
 
             if not expiring_orders:
                 await interaction.followup.send(
