@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -413,6 +413,68 @@ def _validate_order_confirmation_template(template: str) -> None:
         )
 
 
+def _parse_role_ids(payload: dict[str, Any]) -> RoleIDs:
+    """Parse role IDs with support for dynamic keys."""
+    if not payload:
+        raise ValueError("role_ids section is missing")
+        
+    known_fields = {f.name for f in fields(RoleIDs) if f.name != 'data'}
+    known_args = {}
+    extra_args = {}
+    
+    for k, v in payload.items():
+        if k in known_fields:
+            known_args[k] = int(v) if v is not None else None
+        else:
+            try:
+                extra_args[k] = int(v)
+            except (ValueError, TypeError):
+                pass  # Ignore invalid values in extra args
+            
+    if "admin" not in known_args:
+         raise ValueError("role_ids.admin is required")
+
+    return RoleIDs(**known_args, data=extra_args)
+
+
+def _parse_ticket_categories(payload: dict[str, Any]) -> TicketCategories:
+    """Parse ticket categories, ignoring unknown keys."""
+    if not payload:
+        raise ValueError("ticket_categories section is missing")
+        
+    known_fields = {f.name for f in fields(TicketCategories)}
+    known_args = {}
+    
+    for k, v in payload.items():
+        if k in known_fields:
+            known_args[k] = int(v)
+            
+    missing = {'support', 'billing', 'sales'} - known_args.keys()
+    if missing:
+        raise ValueError(f"ticket_categories missing required fields: {', '.join(missing)}")
+        
+    return TicketCategories(**known_args)
+
+
+def _parse_logging_channels(payload: dict[str, Any]) -> LoggingChannels:
+    """Parse logging channels, ignoring unknown keys."""
+    if not payload:
+        raise ValueError("logging_channels section is missing")
+        
+    known_fields = {f.name for f in fields(LoggingChannels)}
+    known_args = {}
+    
+    for k, v in payload.items():
+        if k in known_fields:
+            known_args[k] = int(v) if v is not None else None
+            
+    missing = {'audit', 'payments', 'tickets', 'errors'} - known_args.keys()
+    if missing:
+        raise ValueError(f"logging_channels missing required fields: {', '.join(missing)}")
+        
+    return LoggingChannels(**known_args)
+
+
 def load_payment_settings(config_path: str | Path = PAYMENTS_CONFIG_PATH) -> PaymentSettings:
     """Load and parse payment settings from JSON file."""
     path = Path(config_path)
@@ -473,8 +535,8 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
     return Config(
         token=data["token"],
         guild_ids=[int(gid) for gid in data["guild_ids"]],
-        role_ids=RoleIDs(**data["role_ids"]),
-        ticket_categories=TicketCategories(**data["ticket_categories"]),
+        role_ids=_parse_role_ids(data["role_ids"]),
+        ticket_categories=_parse_ticket_categories(data["ticket_categories"]),
         operating_hours=_parse_operating_hours(data["operating_hours"]),
         payment_methods=_parse_payment_methods(data.get("payment_methods", [])),
         payment_settings=payment_settings,
@@ -483,7 +545,7 @@ def load_config(config_path: str | Path = CONFIG_PATH) -> Config:
         rate_limits=_parse_rate_limits(data.get("rate_limits")),
         financial_cooldowns=_parse_financial_cooldowns(data.get("financial_cooldowns")),
         roles=_parse_roles(data.get("roles", [])),
-        logging_channels=LoggingChannels(**data["logging_channels"]),
+        logging_channels=_parse_logging_channels(data["logging_channels"]),
         bot_prefix=data.get("bot_prefix", "!"),
         category_ids=_parse_category_ids(data.get("category_ids")),
         channel_ids=_parse_channel_ids(data.get("channel_ids")),

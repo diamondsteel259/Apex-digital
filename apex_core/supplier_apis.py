@@ -72,7 +72,7 @@ class NiceSMMPanelAPI(SupplierAPI):
     async def get_services(self) -> List[SupplierProduct]:
         """Fetch services from NiceSMMPanel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "services"
@@ -123,7 +123,7 @@ class NiceSMMPanelAPI(SupplierAPI):
     async def create_order(self, service_id: str, link: str, quantity: int, **kwargs) -> Dict[str, Any]:
         """Create order with NiceSMMPanel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "add",
@@ -142,7 +142,7 @@ class NiceSMMPanelAPI(SupplierAPI):
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
         """Get order status from NiceSMMPanel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "status",
@@ -157,7 +157,7 @@ class NiceSMMPanelAPI(SupplierAPI):
     async def get_balance(self) -> float:
         """Get balance from NiceSMMPanel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "balance"
@@ -183,7 +183,7 @@ class JustAnotherPanelAPI(SupplierAPI):
     async def get_services(self) -> List[SupplierProduct]:
         """Fetch services from Just Another Panel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "services"
@@ -232,7 +232,7 @@ class JustAnotherPanelAPI(SupplierAPI):
     async def create_order(self, service_id: str, link: str, quantity: int, **kwargs) -> Dict[str, Any]:
         """Create order with Just Another Panel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "add",
@@ -251,7 +251,7 @@ class JustAnotherPanelAPI(SupplierAPI):
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
         """Get order status from Just Another Panel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "status",
@@ -266,7 +266,7 @@ class JustAnotherPanelAPI(SupplierAPI):
     async def get_balance(self) -> float:
         """Get balance from Just Another Panel."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "balance"
@@ -293,7 +293,7 @@ class MagicSMMAPI(SupplierAPI):
         """Fetch services from MagicSMM."""
         # Similar structure to NiceSMMPanel
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "services"
@@ -342,7 +342,7 @@ class MagicSMMAPI(SupplierAPI):
     async def create_order(self, service_id: str, link: str, quantity: int, **kwargs) -> Dict[str, Any]:
         """Create order with MagicSMM."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "add",
@@ -361,7 +361,7 @@ class MagicSMMAPI(SupplierAPI):
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
         """Get order status from MagicSMM."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "status",
@@ -376,7 +376,7 @@ class MagicSMMAPI(SupplierAPI):
     async def get_balance(self) -> float:
         """Get balance from MagicSMM."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 data = {
                     "key": self.api_key,
                     "action": "balance"
@@ -402,7 +402,7 @@ class PlatiMarketAPI(SupplierAPI):
     async def get_services(self) -> List[SupplierProduct]:
         """Fetch services from Plati.market."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 # Plati.market typically uses GET with API key in headers or params
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
@@ -480,7 +480,7 @@ class PlatiMarketAPI(SupplierAPI):
     async def create_order(self, service_id: str, link: str, quantity: int, **kwargs) -> Dict[str, Any]:
         """Create order with Plati.market."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
@@ -502,7 +502,7 @@ class PlatiMarketAPI(SupplierAPI):
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
         """Get order status from Plati.market."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {"Authorization": f"Bearer {self.api_key}"}
                 params = {"key": self.api_key, "order_id": order_id}
                 
@@ -515,7 +515,7 @@ class PlatiMarketAPI(SupplierAPI):
     async def get_balance(self) -> float:
         """Get balance from Plati.market."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {"Authorization": f"Bearer {self.api_key}"}
                 params = {"key": self.api_key}
                 
@@ -542,7 +542,7 @@ class KinguinAPI(SupplierAPI):
     async def get_services(self) -> List[SupplierProduct]:
         """Fetch products from Kinguin."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {
                     "X-Api-Key": self.api_key,
                     "Content-Type": "application/json"
@@ -617,7 +617,7 @@ class KinguinAPI(SupplierAPI):
     async def create_order(self, service_id: str, link: str, quantity: int, **kwargs) -> Dict[str, Any]:
         """Create order with Kinguin."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {
                     "X-Api-Key": self.api_key,
                     "Content-Type": "application/json"
@@ -638,7 +638,7 @@ class KinguinAPI(SupplierAPI):
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
         """Get order status from Kinguin."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {"X-Api-Key": self.api_key}
                 
                 async with session.get(f"{self.api_url}/orders/{order_id}", headers=headers) as response:
@@ -650,7 +650,7 @@ class KinguinAPI(SupplierAPI):
     async def get_balance(self) -> float:
         """Get balance from Kinguin."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 headers = {"X-Api-Key": self.api_key}
                 
                 async with session.get(f"{self.api_url}/account/balance", headers=headers) as response:

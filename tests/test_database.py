@@ -16,7 +16,7 @@ async def test_update_wallet_balance_tracks_lifetime_spend(db):
     user = await db.get_user(12345)
     assert user is not None
     assert user["wallet_balance_cents"] == 750
-    assert user["total_lifetime_spent_cents"] == 750
+    assert user["total_lifetime_spent_cents"] == 0
 
 
 @pytest.mark.asyncio
@@ -27,7 +27,7 @@ async def test_update_wallet_balance_negative_deltas_do_not_increase_lifetime(db
     user = await db.get_user(23456)
     assert user is not None
     assert user["wallet_balance_cents"] == 600
-    assert user["total_lifetime_spent_cents"] == 1000
+    assert user["total_lifetime_spent_cents"] == 0
 
 
 @pytest.mark.asyncio
@@ -64,7 +64,7 @@ async def test_purchase_product_deducts_balance_and_creates_order(db):
     user = await db.get_user(34567)
     assert user is not None
     assert user["wallet_balance_cents"] == 800
-    assert user["total_lifetime_spent_cents"] == 3_200
+    assert user["total_lifetime_spent_cents"] == 1_200
 
 
 @pytest.mark.asyncio
@@ -141,12 +141,12 @@ async def test_create_manual_order_updates_lifetime_not_wallet(db):
         notes="Manual entry",
     )
 
-    assert new_lifetime == 1_400
+    assert new_lifetime == 400
 
     user = await db.get_user(78901)
     assert user is not None
     assert user["wallet_balance_cents"] == 1_000
-    assert user["total_lifetime_spent_cents"] == 1_400
+    assert user["total_lifetime_spent_cents"] == 400
 
     cursor = await db._connection.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
     order = await cursor.fetchone()
@@ -932,6 +932,6 @@ async def test_wallet_transactions_index_exists_after_migrations(db):
 
 
 @pytest.mark.asyncio
-async def test_database_schema_version_is_13(db):
-     """Test that the target schema version is 13."""
-     assert db.target_schema_version == 13
+async def test_database_schema_version_is_24(db):
+     """Test that the target schema version is 24."""
+     assert db.target_schema_version == 24

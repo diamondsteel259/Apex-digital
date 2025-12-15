@@ -381,17 +381,16 @@ def financial_cooldown(
                 
                 return None
             
+            # Set cooldown immediately to prevent race conditions (double-clicks)
+            await manager.set_cooldown(user.id, command_key, config.seconds)
+            
             # Execute the command
             try:
                 result = await func(*args, **kwargs)
-                
-                # Only set cooldown if command succeeded
-                await manager.set_cooldown(user.id, command_key, config.seconds)
-                
                 return result
                 
             except Exception as exc:
-                # Don't set cooldown if command failed
+                # Don't reset cooldown on error - fail safe
                 logger.error(
                     "Financial command %s failed for user %s: %s",
                     command_key,
