@@ -695,14 +695,10 @@ class Database:
                     """
                     UPDATE users
                     SET wallet_balance_cents = wallet_balance_cents + ?,
-                        total_lifetime_spent_cents = CASE
-                            WHEN ? > 0 THEN total_lifetime_spent_cents + ?
-                            ELSE total_lifetime_spent_cents
-                        END,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE discord_id = ?;
                     """,
-                    (delta_cents, delta_cents, delta_cents, discord_id),
+                    (delta_cents, discord_id),
                 )
             except Exception as e:
                 if started_transaction:
@@ -1857,20 +1853,7 @@ class Database:
         )
         return await cursor.fetchone()
 
-    async def update_order_status(self, order_id: int, status: str) -> None:
-        """Update the status of an order."""
-        if self._connection is None:
-            raise RuntimeError("Database connection not initialized.")
-
-        valid_statuses = ["pending", "fulfilled", "refill", "refunded"]
-        if status not in valid_statuses:
-            raise ValueError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
-
-        await self._connection.execute(
-            "UPDATE orders SET status = ? WHERE id = ?",
-            (status, order_id),
-        )
-        await self._connection.commit()
+    # Removed duplicate update_order_status
 
     async def renew_order_warranty(
         self, 
@@ -3553,6 +3536,10 @@ class Database:
         """
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
+
+        valid_statuses = ["pending", "fulfilled", "refill", "refunded"]
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
         
         await self._connection.execute(
             """
@@ -4438,16 +4425,26 @@ class Database:
                 "ALTER TABLE orders ADD COLUMN status TEXT DEFAULT 'pending'"
             )
             await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)"
+            )
+
+        if "estimated_delivery" not in columns:
+            await self._connection.execute(
                 "ALTER TABLE orders ADD COLUMN estimated_delivery TEXT"
             )
+
+        if "status_notes" not in columns:
             await self._connection.execute(
                 "ALTER TABLE orders ADD COLUMN status_notes TEXT"
             )
+
+        if "updated_at" not in columns:
             await self._connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)"
+                "ALTER TABLE orders ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
             )
-            await self._connection.commit()
-            logger.info("Added status tracking columns to orders table")
+
+        await self._connection.commit()
+        logger.info("Added status tracking columns to orders table")
 
     # ==================== AI SUPPORT METHODS ====================
     

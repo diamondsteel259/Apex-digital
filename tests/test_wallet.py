@@ -25,7 +25,7 @@ async def test_concurrent_wallet_updates_are_thread_safe(db, user_factory):
 
     user = await db.get_user(user_id)
     assert user["wallet_balance_cents"] == 500
-    assert user["total_lifetime_spent_cents"] == 500
+    assert user["total_lifetime_spent_cents"] == 0
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_negative_deltas_do_not_increase_lifetime_spend(db, user_factory):
 
     user = await db.get_user(user_id)
     assert user["wallet_balance_cents"] == 600
-    assert user["total_lifetime_spent_cents"] == 1_000
+    assert user["total_lifetime_spent_cents"] == 0
 
 
 @pytest.mark.asyncio

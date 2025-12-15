@@ -40,12 +40,23 @@ class DiscordHandler(logging.Handler):
         
         # Format the message once
         try:
-            msg = f"**{record.levelname}**: {record.getMessage()}"
+            base_msg = f"**{record.levelname}**: {record.getMessage()}"
             if hasattr(record, 'exc_info') and record.exc_info:
-                msg += f"\n```{self.format(record)}```"
+                formatted_trace = self.format(record)
+                # Truncate traceback if needed to fit in code block (roughly)
+                if len(formatted_trace) > 1850:
+                    formatted_trace = formatted_trace[:1850] + "... (truncated)"
+                msg = f"{base_msg}\n```{formatted_trace}```"
+            else:
+                msg = base_msg
+                
+            if len(msg) > 2000:
+                msg = msg[:1997] + "..."
         except Exception:
             # If formatting fails, use a basic message
             msg = f"**{record.levelname}**: {record.getMessage()}"
+            if len(msg) > 2000:
+                msg = msg[:1997] + "..."
         
         # Schedule delivery via dedicated helper
         self._schedule_send(channel, msg)
