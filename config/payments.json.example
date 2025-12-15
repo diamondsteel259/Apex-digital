@@ -1,0 +1,117 @@
+{
+  "_comment": "This is an example payment configuration. Copy to config/payments.json and customize with your values.",
+  "payment_methods": [
+    {
+      "name": "Wallet",
+      "instructions": "Use your existing wallet balance to complete this purchase instantly.",
+      "emoji": "💳",
+      "metadata": {
+        "type": "internal",
+        "_note": "Internal wallet - no configuration needed"
+      }
+    },
+    {
+      "name": "Binance",
+      "instructions": "Send the desired USD amount via Binance Pay and include your Discord username in the note field.",
+      "emoji": "🟡",
+      "metadata": {
+        "pay_id": "YOUR_BINANCE_PAY_ID",
+        "reference": "Use your Discord username",
+        "url": "https://pay.binance.com/en",
+        "_note": "Get Binance Pay ID from: https://merchant.binance.com/"
+      }
+    },
+    {
+      "name": "Atto",
+      "instructions": "Send payment via Atto using the address below. 1% cashback will be automatically credited to your wallet.",
+      "emoji": "⚡",
+      "metadata": {
+        "address": "YOUR_ATTO_WALLET_ADDRESS",
+        "cashback_percent": "1",
+        "_note": "Use same address as ATTO_MAIN_WALLET_ADDRESS in .env"
+      }
+    },
+    {
+      "name": "PayPal",
+      "instructions": "Send payment to the PayPal address below and include your Discord username in the note.",
+      "emoji": "💰",
+      "metadata": {
+        "payout_email": "your-paypal@example.com",
+        "_note": "Use same email as PAYPAL_EMAIL in .env"
+      }
+    },
+    {
+      "name": "Tip.cc",
+      "instructions": "Use Tip.cc to send a tip to @ApexCore. Include the ticket channel link in your tip message.",
+      "emoji": "🤖",
+      "metadata": {
+        "command": "/tip 25 @ApexCore",
+        "url": "https://tip.cc",
+        "_note": "Replace @ApexCore with your bot's username"
+      }
+    },
+    {
+      "name": "CryptoJar",
+      "instructions": "Use CryptoJar to send crypto tips to @ApexCore. Mention your ticket in the message.",
+      "emoji": "🏺",
+      "metadata": {
+        "command": "/jar 25 @ApexCore",
+        "url": "https://cryptojar.app",
+        "_note": "Replace @ApexCore with your bot's username"
+      }
+    },
+    {
+      "name": "Bitcoin",
+      "instructions": "Send Bitcoin to the address below and reply with the transaction hash.",
+      "emoji": "🟠",
+      "metadata": {
+        "network": "Bitcoin",
+        "address": "YOUR_BITCOIN_ADDRESS",
+        "_note": "Use same address as BTC_WALLET_ADDRESS in .env"
+      }
+    },
+    {
+      "name": "Ethereum",
+      "instructions": "Send Ethereum or ERC-20 tokens to the address below and reply with the transaction hash.",
+      "emoji": "🔷",
+      "metadata": {
+        "network": "Ethereum",
+        "address": "YOUR_ETHEREUM_ADDRESS",
+        "_note": "Use same address as ETH_WALLET_ADDRESS in .env"
+      }
+    },
+    {
+      "name": "Solana",
+      "instructions": "Send Solana or SPL tokens to the address below and reply with the transaction hash.",
+      "emoji": "🟣",
+      "metadata": {
+        "network": "Solana",
+        "address": "YOUR_SOLANA_ADDRESS",
+        "_note": "Use same address as SOL_WALLET_ADDRESS in .env"
+      }
+    }
+  ],
+  "order_confirmation_template": "Order #{order_id} confirmed!\n\nService: {service_name} {variant_name}\nPrice: {price}\nETA: {eta}\n\nRefund Policy: {refund_policy}",
+  "refund_policy": "3 days from completion | 10% handling fee applied | 48hr ticket auto-close",
+  "_setup_instructions": {
+    "step_1": "Copy this file to config/payments.json",
+    "step_2": "Replace all YOUR_* placeholders with actual values",
+    "step_3": "Remove or disable payment methods you don't want to use",
+    "step_4": "Customize instructions and emojis as needed",
+    "step_5": "Keep config/payments.json secure and never commit it to git",
+    "required_placeholders": [
+      "order_id - Replaced with actual order ID",
+      "service_name - Replaced with product/service name",
+      "variant_name - Replaced with variant details",
+      "price - Replaced with formatted price",
+      "eta - Replaced with delivery time estimate",
+      "refund_policy - Replaced with value from refund_policy field"
+    ],
+    "security_notes": [
+      "This file is automatically ignored by .gitignore",
+      "Set permissions: chmod 600 config/payments.json",
+      "Keep payment addresses private to prevent front-running",
+      "Regularly verify wallet addresses haven't been tampered with"
+    ]
+  }
+}
