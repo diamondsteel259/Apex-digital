@@ -967,6 +967,7 @@ class TestPanelValidation(unittest.TestCase):
             ]:
                 f = Mock()
                 f.name = name
+                f.value = "Content"
                 fields.append(f)
             mock_embed.fields = fields
 
@@ -1012,6 +1013,7 @@ class TestPanelValidation(unittest.TestCase):
             for name in ["How to Leave a Review", "Rating System", "Earn Rewards"]:
                 f = Mock()
                 f.name = name
+                f.value = "Content"
                 fields.append(f)
             mock_embed.fields = fields
 
