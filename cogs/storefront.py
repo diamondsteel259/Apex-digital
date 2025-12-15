@@ -1950,203 +1950,351 @@ class StorefrontCog(commands.Cog):
             )
 
         try:
-            channel = await category.create_text_channel(
-                name=channel_name,
-                overwrites=overwrites,
-                reason=(
-                    f"Storefront ticket #{counter} for {main_category}/{sub_category}/"
-                    f"{product['variant_name']} by {member.display_name}"
-                ),
+            logger.info(
+                "Starting ticket creation | Category: %s > %s | Product ID: %s | User: %s (%s)",
+                main_category,
+                sub_category,
+                product_id,
+                interaction.user.name,
+                interaction.user.id,
             )
-            
-            await self.bot.db._connection.execute(
-                "UPDATE tickets SET channel_id = ? WHERE id = ?",
-                (channel.id, ticket_id)
-            )
-            await self.bot.db._connection.commit()
-            
-        except discord.HTTPException as error:
-            logger.error("Failed to create support ticket: %s", error)
-            await interaction.followup.send(
-                "Unable to create a ticket channel right now. Please try again later.",
-                ephemeral=True,
-            )
-            return
 
-        user_row = await self.bot.db.get_user(member.id)
-        if not user_row:
+            if interaction.guild is None:
+                logger.warning("Ticket creation failed: No guild context | User: %s", interaction.user.id)
+                await interaction.response.send_message(
+                    "This command can only be used inside a server.", ephemeral=True
+                )
+                return
+
+            member = self._resolve_member(interaction)
+            if member is None:
+                logger.warning("Ticket creation failed: Could not resolve member | User: %s", interaction.user.id)
+                await interaction.response.send_message(
+                    "Unable to resolve your member profile. Please try again.", ephemeral=True
+                )
+                return
+
+            logger.debug("Deferring interaction | User: %s", interaction.user.id)
+            await interaction.response.defer(ephemeral=True, thinking=True)
+
+            logger.debug("Ensuring user exists in database | User: %s", interaction.user.id)
             await self.bot.db.ensure_user(member.id)
+
+            logger.debug("Fetching product from database | Product ID: %s | User: %s", product_id, interaction.user.id)
+            product = await self.bot.db.get_product(product_id)
+            if not product or not product["is_active"]:
+                await interaction.followup.send(
+                    "The selected product is no longer available.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.debug("Product validated | Product: %s | User: %s", product.get("variant_name"), interaction.user.id)
+            if (
+                product["main_category"] != main_category
+                or product["sub_category"] != sub_category
+            ):
+                logger.warning("Product category mismatch | Expected: %s > %s | Got: %s > %s | User: %s",
+                               main_category, sub_category, product["main_category"], product["sub_category"], interaction.user.id)
+                await interaction.followup.send(
+                    "Product selection mismatch. Please try again.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.debug("Fetching support category | Category ID: %s | User: %s", self.bot.config.ticket_categories.support, interaction.user.id)
+            support_category_id = self.bot.config.ticket_categories.support
+            category = interaction.guild.get_channel(support_category_id)
+            if not isinstance(category, discord.CategoryChannel):
+                logger.error("Support category not found or misconfigured | Category ID: %s | User: %s", support_category_id, interaction.user.id)
+                await interaction.followup.send(
+                    "Support category is not configured correctly. Please contact an admin.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.debug("Fetching admin role | Role ID: %s | User: %s", self.bot.config.role_ids.admin, interaction.user.id)
+            admin_role = interaction.guild.get_role(self.bot.config.role_ids.admin)
+            if admin_role is None:
+                logger.error("Admin role not found | Role ID: %s | User: %s", self.bot.config.role_ids.admin, interaction.user.id)
+                await interaction.followup.send(
+                    "Admin role is missing or misconfigured. Please notify the server owner.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.debug("Creating ticket record in database | User: %s", interaction.user.id)
+            ticket_id, counter = await self.bot.db.create_ticket_with_counter(
+                user_discord_id=member.id,
+                channel_id=0,
+                status="open",
+                ticket_type="order",
+            )
+
+            sanitized_username = member.name.lower()
+            sanitized_username = ''.join(c if c.isalnum() or c == '-' else '-' for c in sanitized_username)
+            sanitized_username = sanitized_username.strip('-')[:20]
+            if not sanitized_username:
+                sanitized_username = "user"
+
+            channel_name = f"ticket-{sanitized_username}-order{counter}"
+
+            overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+                interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                member: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    attach_files=True,
+                    read_message_history=True,
+                ),
+                admin_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    manage_messages=True,
+                    read_message_history=True,
+                ),
+            }
+            if interaction.guild.me:
+                overwrites[interaction.guild.me] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    manage_messages=True,
+                    read_message_history=True,
+                )
+
+            logger.debug("Creating ticket channel | Name: %s | User: %s", channel_name, interaction.user.id)
+            try:
+                channel = await category.create_text_channel(
+                    name=channel_name,
+                    overwrites=overwrites,
+                    reason=(
+                        f"Storefront ticket #{counter} for {main_category}/{sub_category}/"
+                        f"{product['variant_name']} by {member.display_name}"
+                    ),
+                )
+
+                await self.bot.db._connection.execute(
+                    "UPDATE tickets SET channel_id = ? WHERE id = ?",
+                    (channel.id, ticket_id)
+                )
+                await self.bot.db._connection.commit()
+                logger.info("Ticket channel created successfully | Channel: %s | Ticket ID: %s | User: %s", channel.name, ticket_id, interaction.user.id)
+
+            except discord.HTTPException as error:
+                logger.error("Failed to create support ticket channel | Error: %s | User: %s", error, interaction.user.id, exc_info=True)
+                await interaction.followup.send(
+                    "Unable to create a ticket channel right now. Please try again later.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.debug("Fetching user wallet and discount info | User: %s", interaction.user.id)
             user_row = await self.bot.db.get_user(member.id)
         
-        user_balance_cents = user_row["wallet_balance_cents"] if user_row else 0
+            user_balance_cents = user_row["wallet_balance_cents"] if user_row else 0
         
-        vip_tier = calculate_vip_tier(
-            user_row["total_lifetime_spent_cents"] if user_row else 0,
-            self.bot.config
-        )
-        discount_percent = await self._calculate_discount(
-            member.id, product_id, vip_tier
-        )
-        final_price_cents = int(product["price_cents"] * (1 - discount_percent / 100))
-        
-        payment_methods = []
-        if self.bot.config.payment_settings:
-            payment_methods = self.bot.config.payment_settings.payment_methods
-        elif self.bot.config.payment_methods:
-            payment_methods = self.bot.config.payment_methods
-        
-        enabled_methods = [
-            m for m in payment_methods 
-            if getattr(m, 'is_enabled', m.metadata.get('is_enabled', True)) != False
-        ]
-        
-        payment_embed = _build_payment_embed(
-            product=product,
-            user=member,
-            final_price_cents=final_price_cents,
-            user_balance_cents=user_balance_cents,
-            payment_methods=enabled_methods,
-        )
-        
-        payment_view = PaymentOptionsView(
-            product_id=product_id,
-            final_price_cents=final_price_cents,
-            user_balance_cents=user_balance_cents,
-            payment_methods=enabled_methods,
-            cog_instance=self,
-            base_price_cents=product["price_cents"],
-            current_discount=discount_percent,
-        )
-        
-        price_text = format_usd(product["price_cents"])
-        start_time = product.get("start_time") or "N/A"
-        duration = product.get("duration") or "N/A"
-        refill = product.get("refill_period") or "N/A"
-        additional_info = product.get("additional_info") or "N/A"
-        
-        owner_embed = create_embed(
-            title=f"📦 New Order Ticket: {main_category} • {sub_category}",
+            vip_tier = calculate_vip_tier(
+                user_row["total_lifetime_spent_cents"] if user_row else 0,
+                self.bot.config
+            )
+            discount_percent = await self._calculate_discount(
+                member.id, product_id, vip_tier
+            )
+            final_price_cents = int(product["price_cents"] * (1 - discount_percent / 100))
+            
+            payment_methods = []
+            if self.bot.config.payment_settings:
+                payment_methods = self.bot.config.payment_settings.payment_methods
+            elif self.bot.config.payment_methods:
+                payment_methods = self.bot.config.payment_methods
+            
+            enabled_methods = [
+                m for m in payment_methods 
+                if getattr(m, 'is_enabled', m.metadata.get('is_enabled', True)) != False
+            ]
+            
+            payment_embed = _build_payment_embed(
+                product=product,
+                user=member,
+                final_price_cents=final_price_cents,
+                user_balance_cents=user_balance_cents,
+                payment_methods=enabled_methods,
+            )
+            
+            payment_view = PaymentOptionsView(
+                product_id=product_id,
+                final_price_cents=final_price_cents,
+                user_balance_cents=user_balance_cents,
+                payment_methods=enabled_methods,
+                cog_instance=self,
+                base_price_cents=product["price_cents"],
+                current_discount=discount_percent,
+            )
+            
+            price_text = format_usd(product["price_cents"])
+            start_time = product.get("start_time") or "N/A"
+            duration = product.get("duration") or "N/A"
+            refill = product.get("refill_period") or "N/A"
+            additional_info = product.get("additional_info") or "N/A"
+            
+            owner_embed = create_embed(
+                title=f"📦 New Order Ticket: {main_category} • {sub_category}",
             description=(
                 f"**Customer:** {member.mention} ({member.display_name})\n"
                 f"**User ID:** {member.id}\n"
                 f"**Ticket ID:** #{ticket_id}\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
-            color=discord.Color.blue(),
-        )
-        product_details = (
-            f"**Service:** {product['service_name']}\n"
-            f"**Variant:** {product['variant_name']}\n"
-            f"**Base Price:** {price_text}\n"
-            f"**Final Price:** {format_usd(final_price_cents)}\n"
-            f"**Discount:** {discount_percent:.1f}%"
-        )
-        
-        # Add customization data if provided
-        if customization_data:
-            product_details += "\n\n**📝 Customization Details:**"
-            if customization_data.get("target_url"):
-                product_details += f"\n• **Target URL:** {customization_data['target_url']}"
-            if customization_data.get("username"):
-                product_details += f"\n• **Username:** {customization_data['username']}"
-            if customization_data.get("special_instructions"):
-                product_details += f"\n• **Instructions:** {customization_data['special_instructions'][:200]}"
-        
-        owner_embed.add_field(
-            name="📋 Product Details",
-            value=product_details,
-            inline=False,
-        )
-        owner_embed.add_field(
-            name="⏱️ Service Info",
-            value=(
-                f"**Start Time:** {start_time}\n"
-                f"**Duration:** {duration}\n"
-                f"**Refill:** {refill}"
-            ),
-            inline=True,
-        )
-        owner_embed.add_field(
-            name="💰 Payment Info",
-            value=(
-                f"**Amount Due:** {format_usd(final_price_cents)}\n"
-                f"**User Balance:** {format_usd(user_balance_cents)}\n"
-                f"**Status:** Awaiting Payment"
-            ),
-            inline=True,
-        )
-        
-        # Add supplier info for admin (hidden from users)
-        # Check if supplier fields exist - use product dict directly
-        try:
-            # product is a dict from database row
-            if "supplier_id" in product and product.get("supplier_id"):
-                supplier_name = product.get("supplier_name", "Unknown Supplier")
-                supplier_service_id = product.get("supplier_service_id", "")
-                supplier_api_url = product.get("supplier_api_url", "")
-                supplier_price_cents = product.get("supplier_price_cents", 0)
-                
-                supplier_info = f"**Supplier:** {supplier_name}\n"
-                supplier_info += f"**Service ID:** {supplier_service_id}\n"
-                if supplier_price_cents:
-                    supplier_info += f"**Supplier Price:** {format_usd(supplier_price_cents)}\n"
-                if supplier_api_url:
-                    supplier_info += f"**API URL:** {supplier_api_url}"
-                
-                owner_embed.add_field(
-                    name="🔗 Supplier Info (Admin Only)",
-                    value=supplier_info,
-                    inline=False,
-                )
-        except Exception as e:
-            logger.debug(f"Could not add supplier info: {e}")
-        
-        if additional_info and additional_info != "N/A":
+                color=discord.Color.blue(),
+            )
+            product_details = (
+                f"**Service:** {product['service_name']}\n"
+                f"**Variant:** {product['variant_name']}\n"
+                f"**Base Price:** {price_text}\n"
+                f"**Final Price:** {format_usd(final_price_cents)}\n"
+                f"**Discount:** {discount_percent:.1f}%"
+            )
+            
+            # Add customization data if provided
+            if customization_data:
+                product_details += "\n\n**📝 Customization Details:**"
+                if customization_data.get("target_url"):
+                    product_details += f"\n• **Target URL:** {customization_data['target_url']}"
+                if customization_data.get("username"):
+                    product_details += f"\n• **Username:** {customization_data['username']}"
+                if customization_data.get("special_instructions"):
+                    product_details += f"\n• **Instructions:** {customization_data['special_instructions'][:200]}"
+            
             owner_embed.add_field(
-                name="ℹ️ Additional Info",
-                value=additional_info,
+                name="📋 Product Details",
+                value=product_details,
                 inline=False,
             )
-        owner_embed.add_field(
-            name="🕒 Operating Hours",
-            value=render_operating_hours(self.bot.config.operating_hours),
-            inline=False,
-        )
-        owner_embed.set_thumbnail(url=member.display_avatar.url)
-        owner_embed.set_footer(text="Apex Core • Order Management")
-
-        await channel.send(
-            content=f"{admin_role.mention} — New order ticket opened!",
-            embed=owner_embed,
-        )
-        
-        payment_message = await channel.send(
-            content=f"{member.mention}",
-            embed=payment_embed,
-            view=payment_view,
-        )
-        
-        # Store payment message in view for promo code updates
-        payment_view.payment_message = payment_message
-
-        try:
-            dm_embed = create_embed(
-                title="Support Ticket Created",
-                description=(
-                    f"Your support ticket for **{product['variant_name']}** is live: {channel.mention}\n"
-                    f"Price: {price_text}"
+            owner_embed.add_field(
+                name="⏱️ Service Info",
+                value=(
+                    f"**Start Time:** {start_time}\n"
+                    f"**Duration:** {duration}\n"
+                    f"**Refill:** {refill}"
                 ),
-                color=discord.Color.green(),
+                inline=True,
             )
-            await member.send(embed=dm_embed)
-        except discord.Forbidden:
-            logger.warning("Could not DM user %s about ticket creation", member.id)
+            owner_embed.add_field(
+                name="💰 Payment Info",
+                value=(
+                    f"**Amount Due:** {format_usd(final_price_cents)}\n"
+                    f"**User Balance:** {format_usd(user_balance_cents)}\n"
+                    f"**Status:** Awaiting Payment"
+                ),
+                inline=True,
+            )
+            
+            # Add supplier info for admin (hidden from users)
+            # Check if supplier fields exist - use product dict directly
+            try:
+                # product is a dict from database row
+                if "supplier_id" in product and product.get("supplier_id"):
+                    supplier_name = product.get("supplier_name", "Unknown Supplier")
+                    supplier_service_id = product.get("supplier_service_id", "")
+                    supplier_api_url = product.get("supplier_api_url", "")
+                    supplier_price_cents = product.get("supplier_price_cents", 0)
+                    
+                    supplier_info = f"**Supplier:** {supplier_name}\n"
+                    supplier_info += f"**Service ID:** {supplier_service_id}\n"
+                    if supplier_price_cents:
+                        supplier_info += f"**Supplier Price:** {format_usd(supplier_price_cents)}\n"
+                    if supplier_api_url:
+                        supplier_info += f"**API URL:** {supplier_api_url}"
+                    
+                    owner_embed.add_field(
+                        name="🔗 Supplier Info (Admin Only)",
+                        value=supplier_info,
+                        inline=False,
+                    )
+            except Exception as e:
+                logger.debug(f"Could not add supplier info: {e}")
+            
+            if additional_info and additional_info != "N/A":
+                owner_embed.add_field(
+                    name="ℹ️ Additional Info",
+                    value=additional_info,
+                    inline=False,
+                )
+            
+            owner_embed.add_field(
+                name="🕒 Operating Hours",
+                value=render_operating_hours(self.bot.config.operating_hours),
+                inline=False,
+            )
+            owner_embed.set_thumbnail(url=member.display_avatar.url)
+            owner_embed.set_footer(text="Apex Core • Order Management")
 
-        await interaction.followup.send(
-            f"Your support ticket is ready: {channel.mention}",
-            ephemeral=True,
-        )
+            await channel.send(
+                content=f"{admin_role.mention} — New order ticket opened!",
+                embed=owner_embed,
+            )
+            
+            payment_message = await channel.send(
+                content=f"{member.mention}",
+                embed=payment_embed,
+                view=payment_view,
+            )
+            
+            # Store payment message in view for promo code updates
+            payment_view.payment_message = payment_message
 
+            try:
+                dm_embed = create_embed(
+                    title="Support Ticket Created",
+                    description=(
+                        f"Your support ticket for **{product['variant_name']}** is live: {channel.mention}\n"
+                        f"Price: {price_text}"
+                    ),
+                    color=discord.Color.green(),
+                )
+                await member.send(embed=dm_embed)
+            except discord.Forbidden:
+                logger.warning("Could not DM user %s about ticket creation", member.id)
+
+            logger.debug("Sending followup confirmation | User: %s", interaction.user.id)
+            await interaction.followup.send(
+                f"Your support ticket is ready: {channel.mention}",
+                ephemeral=True,
+            )
+
+            logger.info("Ticket creation completed successfully | Channel: %s | Ticket ID: %s | User: %s (%s)",
+                        channel.name, ticket_id, member.name, member.id)
+
+        except Exception as error:
+                logger.error(
+                    "Unexpected error during ticket creation | Category: %s > %s | Product ID: %s | User: %s (%s) | Error: %s",
+                    main_category,
+                    sub_category,
+                    product_id,
+                    interaction.user.name,
+                    interaction.user.id,
+                    str(error),
+                    exc_info=True,
+                )
+
+                # Try to send error message to user
+                try:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(
+                            "An unexpected error occurred while creating your ticket. Please try again or contact an administrator.",
+                            ephemeral=True,
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "An unexpected error occurred while creating your ticket. Please try again or contact an administrator.",
+                            ephemeral=True,
+                        )
+                except Exception as followup_error:
+                    logger.error("Failed to send error message to user | User: %s | Error: %s", interaction.user.id, followup_error)
+
+    @commands.hybrid_command(name="buy")
     async def _handle_purchase_initiate(
         self, interaction: discord.Interaction, product_id: int
     ) -> None:
