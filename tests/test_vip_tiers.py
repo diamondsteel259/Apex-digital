@@ -17,6 +17,14 @@ def test_calculate_vip_tier_returns_highest_role(sample_config):
 @pytest.mark.asyncio
 async def test_process_post_purchase_detects_promotion(db, sample_config, user_factory):
     user_id = await user_factory(4200)
+    
+    # Set initial lifetime spend to 5,000 to qualify for Apex VIP
+    await db._connection.execute(
+        "UPDATE users SET total_lifetime_spent_cents = ? WHERE discord_id = ?",
+        (5_000, user_id),
+    )
+    await db._connection.commit()
+    
     await db.update_wallet_balance(user_id, 5_000)
 
     old_tier, new_tier = await process_post_purchase(

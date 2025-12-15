@@ -106,6 +106,7 @@ class TestPanelValidators(unittest.IsolatedAsyncioTestCase):
         for name in ["How to Browse Products", "How to Make Purchases", "Need Help?", "How to Open Tickets", "How to Request Refunds"]:
             f = Mock()
             f.name = name
+            f.value = "Some content here"
             fields.append(f)
         message.embeds[0].fields = fields
 
@@ -126,6 +127,7 @@ class TestPanelValidators(unittest.IsolatedAsyncioTestCase):
         for name in ["How to Leave a Review", "Rating System", "Earn Rewards"]:
             f = Mock()
             f.name = name
+            f.value = "Content"
             fields.append(f)
         message.embeds[0].fields = fields
 
