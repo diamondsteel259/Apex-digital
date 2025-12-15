@@ -744,6 +744,17 @@ class TicketManagementCog(commands.Cog):
                 
                 if hours_inactive >= INACTIVITY_CLOSE_HOURS:
                     await self._close_ticket(ticket, channel)
+                    # Send status update
+                    try:
+                        status_cog = self.bot.get_cog("BotStatusCog")
+                        if status_cog:
+                            await status_cog.send_status_update(
+                                "ticket",
+                                f"Ticket #{ticket['id']} auto-closed due to inactivity ({hours_inactive:.1f}h)",
+                                discord.Color.orange()
+                            )
+                    except Exception:
+                        pass
                 elif hours_inactive >= INACTIVITY_WARNING_HOURS:
                     if channel_id not in self.warned_tickets:
                         await self._send_inactivity_warning(ticket, channel, last_activity)

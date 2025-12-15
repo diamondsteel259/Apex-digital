@@ -645,7 +645,7 @@ class CashbackConfirmView(discord.ui.View):
         self.single_user_id = single_user_id
         self.message: Optional[discord.Message] = None
     
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -778,7 +778,7 @@ class CashbackConfirmView(discord.ui.View):
             )
             self.stop()
     
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌")
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
     async def cancel_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:

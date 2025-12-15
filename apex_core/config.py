@@ -74,6 +74,9 @@ class LoggingChannels:
     order_logs: int | None = None
     transcript_archive: int | None = None
     wallet: int | None = None
+    tips: int | None = None
+    airdrops: int | None = None
+    ai_support: int | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,9 @@ class RoleIDs:
     apex_donor: int | None = None
     legendary_donor: int | None = None
     apex_zenith: int | None = None
+    ai_free: int | None = None
+    ai_premium: int | None = None
+    ai_ultra: int | None = None
     data: dict[str, int] = field(default_factory=dict)
 
 

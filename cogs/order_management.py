@@ -121,17 +121,45 @@ class OrderManagementCog(commands.Cog):
                 notes=None
             )
             
-            # Send notification
+            # Send notification using automated messages system
             notification_sent = False
             if notify_user:
-                notification_sent = await send_order_status_notification(
-                    self.bot,
-                    order["user_discord_id"],
-                    order_id,
-                    old_status,
-                    status,
-                    estimated_delivery
-                )
+                # Try automated messages system first
+                automated_cog = self.bot.get_cog("AutomatedMessagesCog")
+                if automated_cog:
+                    try:
+                        product = await self.bot.db.get_product(order["product_id"])
+                        product_name = product.get("variant_name", "Product") if product else "Product"
+                        await automated_cog.send_order_status_update(
+                            user_id=order["user_discord_id"],
+                            order_id=order_id,
+                            old_status=old_status,
+                            new_status=status,
+                            product_name=product_name,
+                            order_amount_cents=order["price_paid_cents"]
+                        )
+                        notification_sent = True
+                    except Exception as e:
+                        logger.error(f"Failed to send automated order update: {e}", exc_info=True)
+                        # Fallback to original notification
+                        notification_sent = await send_order_status_notification(
+                            self.bot,
+                            order["user_discord_id"],
+                            order_id,
+                            old_status,
+                            status,
+                            estimated_delivery
+                        )
+                else:
+                    # Fallback to original notification
+                    notification_sent = await send_order_status_notification(
+                        self.bot,
+                        order["user_discord_id"],
+                        order_id,
+                        old_status,
+                        status,
+                        estimated_delivery
+                    )
             
             embed = create_embed(
                 title="✅ Order Status Updated",
@@ -150,6 +178,31 @@ class OrderManagementCog(commands.Cog):
                     value=estimated_delivery,
                     inline=False
                 )
+            
+            # Add supplier info for admin (if product has supplier)
+            if order["product_id"] != 0:
+                product = await self.bot.db.get_product(order["product_id"])
+                if product:
+                    # Check if supplier fields exist - use product dict directly
+                    try:
+                        # product is a dict from database row
+                        if "supplier_id" in product and product.get("supplier_id"):
+                            supplier_name = product.get("supplier_name", "Unknown Supplier")
+                            supplier_service_id = product.get("supplier_service_id", "")
+                            supplier_api_url = product.get("supplier_api_url", "")
+                            
+                            supplier_info = f"**Supplier:** {supplier_name}\n"
+                            supplier_info += f"**Service ID:** {supplier_service_id}\n"
+                            if supplier_api_url:
+                                supplier_info += f"**API URL:** {supplier_api_url}"
+                            
+                            embed.add_field(
+                                name="🔗 Supplier Information (Admin Only)",
+                                value=supplier_info,
+                                inline=False
+                            )
+                    except Exception as e:
+                        logger.debug(f"Could not add supplier info: {e}")
             
             await interaction.followup.send(embed=embed, ephemeral=True)
             logger.info(f"Order {order_id} status updated from {old_status} to {status} by {interaction.user.id}")

@@ -117,9 +117,16 @@ def _build_payment_embed(
     Returns:
         Configured Discord Embed with payment options and method-specific details
     """
-    variant_name = product.get("variant_name", "Unknown")
-    service_name = product.get("service_name", "Unknown")
-    start_time = product.get("start_time", "N/A")
+    # SQLite Row objects don't have .get() - convert to dict or use direct access
+    if hasattr(product, "keys") and not isinstance(product, dict):
+        product_dict = dict(product)
+        variant_name = product_dict.get("variant_name", "Unknown")
+        service_name = product_dict.get("service_name", "Unknown")
+        start_time = product_dict.get("start_time", "N/A")
+    else:
+        variant_name = product.get("variant_name", "Unknown")
+        service_name = product.get("service_name", "Unknown")
+        start_time = product.get("start_time", "N/A")
     
     # Build price description with promo code if applicable
     price_text = f"**Price:** {format_usd(final_price_cents)}"
@@ -223,6 +230,15 @@ def _build_payment_embed(
                 warning = _safe_get_metadata(metadata, "warning")
                 if warning:
                     methods_text += f"• {warning}\n"
+            
+            elif name == "Atto":
+                methods_text += (
+                    f"• **🎁 10% Deposit Cashback** - Get 10% bonus on all deposits!\n"
+                    f"• **💰 2.5% Payment Bonus** - Choose discount or cashback on payments!\n"
+                    f"• **⚡ Instant Withdrawal** - Withdraw Atto instantly, no waiting!\n"
+                    f"• Use `/attodeposit` to get deposit address\n"
+                    f"• Use `/attopay` to pay with Atto\n"
+                )
             
             elif name == "Crypto" and _safe_get_metadata(metadata, "type") == "custom_networks":
                 networks = _safe_get_metadata(metadata, "networks")
@@ -472,7 +488,7 @@ class SubCategorySelect(discord.ui.Select["SubCategorySelectView"]):
             return
         
         logger.debug("Fetching products for: %s > %s | User: %s", self.main_category, sub_category, interaction.user.id)
-        await cog._show_products(interaction, self.main_category, sub_category)
+        await cog._show_products(interaction, self.main_category, sub_category, page=1, quantity_filter=None)
 
 
 class SubCategorySelectView(discord.ui.View):
@@ -562,34 +578,158 @@ class OpenTicketButton(discord.ui.Button["ProductDisplayView"]):
             )
             return
         
-        # Check if product requires customization (you can customize this logic)
-        # For now, we'll show customization modal for all products
-        # You can add a product field like "requires_customization" to control this
-        product = await interaction.client.db.get_product(selected_product_id)  # type: ignore
-        requires_customization = product and product.get("requires_customization", False) if product else False
-        
-        if requires_customization:
-            # Show customization modal first
-            product_name = product.get("variant_name", "Product") if product else "Product"
-            modal = ProductCustomizationModal(product_name, selected_product_id, self.main_category, self.sub_category)
-            await interaction.response.send_modal(modal)
-        else:
-            logger.debug("Opening ticket for product ID=%s | User: %s", selected_product_id, interaction.user.id)
-            await cog._handle_open_ticket(
-                interaction,
-                self.main_category,
-                self.sub_category,
+        # Check if product requires customization BEFORE deferring
+        # This allows us to show modal if needed
+        try:
+            product = await interaction.client.db.get_product(selected_product_id)  # type: ignore
+            requires_customization = False
+            product_name = "Product"
+            
+            if product:
+                # SQLite Row objects don't have .get() - convert to dict or use direct access
+                if hasattr(product, "keys") and not isinstance(product, dict):
+                    # It's a Row object - convert to dict
+                    product_dict = dict(product)
+                    requires_customization = bool(product_dict.get("requires_customization", False))
+                    variant_name = product_dict.get("variant_name", "Product")
+                    service_name = product_dict.get("service_name", "")
+                else:
+                    # It's already a dict or has .get() method
+                    requires_customization = bool(product.get("requires_customization", False))
+                    variant_name = product.get("variant_name", "Product")
+                    service_name = product.get("service_name", "")
+                
+                product_name = f"{service_name} - {variant_name}" if service_name else variant_name
+            
+            if requires_customization:
+                # Show customization modal BEFORE deferring
+                logger.info(
+                    "Showing customization modal | Product: %s | User: %s",
+                    selected_product_id,
+                    interaction.user.id
+                )
+                modal = ProductCustomizationModal(
+                    product_name=product_name,
+                    product_id=selected_product_id,
+                    main_category=self.main_category,
+                    sub_category=self.sub_category
+                )
+                await interaction.response.send_modal(modal)
+            else:
+                # No customization needed, proceed with ticket creation
+                logger.debug("Opening ticket for product ID=%s | User: %s", selected_product_id, interaction.user.id)
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                await cog._handle_open_ticket(
+                    interaction,
+                    self.main_category,
+                    self.sub_category,
+                    selected_product_id,
+                )
+        except Exception as e:
+            logger.exception(
+                "Error opening ticket | User: %s | Product: %s | Error: %s",
+                interaction.user.id,
                 selected_product_id,
+                e,
+                exc_info=True
             )
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ An error occurred while opening the ticket. Please try again or contact support.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ An error occurred while opening the ticket. Please try again or contact support.",
+                    ephemeral=True
+                )
 
 
 class ProductDisplayView(discord.ui.View):
-    def __init__(self, products: list[dict], main_category: str, sub_category: str) -> None:
+    def __init__(self, products: list[dict], main_category: str, sub_category: str, page: int = 1, total_pages: int = 1, quantity_filter: Optional[str] = None) -> None:
         super().__init__(timeout=120)
+        self.products = products
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.page = page
+        self.total_pages = total_pages
+        self.quantity_filter = quantity_filter
         self.selected_product_id: int | None = products[0]["id"] if products else None
         if products:
             self.add_item(VariantSelect(products))
         self.add_item(OpenTicketButton(main_category, sub_category))
+        
+        # Add pagination buttons
+        if total_pages > 1:
+            if page > 1:
+                self.add_item(PreviousPageButton(main_category, sub_category, page - 1, quantity_filter))
+            if page < total_pages:
+                self.add_item(NextPageButton(main_category, sub_category, page + 1, quantity_filter))
+        
+        # Add filter button
+        self.add_item(FilterProductsButton(main_category, sub_category, page))
+
+
+class PreviousPageButton(discord.ui.Button):
+    def __init__(self, main_category: str, sub_category: str, page: int, quantity_filter: Optional[str] = None):
+        super().__init__(label="◀ Previous", style=discord.ButtonStyle.secondary, emoji="◀")
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.page = page
+        self.quantity_filter = quantity_filter
+    
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")
+        if cog:
+            await cog._show_products(interaction, self.main_category, self.sub_category, self.page, self.quantity_filter)
+
+
+class NextPageButton(discord.ui.Button):
+    def __init__(self, main_category: str, sub_category: str, page: int, quantity_filter: Optional[str] = None):
+        super().__init__(label="Next ▶", style=discord.ButtonStyle.secondary, emoji="▶")
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.page = page
+        self.quantity_filter = quantity_filter
+    
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")
+        if cog:
+            await cog._show_products(interaction, self.main_category, self.sub_category, self.page, self.quantity_filter)
+
+
+class FilterProductsButton(discord.ui.Button):
+    def __init__(self, main_category: str, sub_category: str, page: int):
+        super().__init__(label="🔍 Filter", style=discord.ButtonStyle.secondary)
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.page = page
+    
+    async def callback(self, interaction: discord.Interaction) -> None:
+        modal = QuantityFilterModal(self.main_category, self.sub_category, self.page)
+        await interaction.response.send_modal(modal)
+
+
+class QuantityFilterModal(discord.ui.Modal, title="Filter Products by Quantity"):
+    def __init__(self, main_category: str, sub_category: str, page: int):
+        super().__init__()
+        self.main_category = main_category
+        self.sub_category = sub_category
+        self.page = page
+    
+    quantity = discord.ui.TextInput(
+        label="Quantity Filter",
+        placeholder="e.g., 1000, 5000, 10000 (leave empty to show all)",
+        required=False,
+        max_length=50
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        quantity_filter = self.quantity.value.strip() if self.quantity.value else None
+        cog: StorefrontCog = interaction.client.get_cog("StorefrontCog")
+        if cog:
+            await interaction.response.defer(ephemeral=True)
+            await cog._show_products(interaction, self.main_category, self.sub_category, 1, quantity_filter)
 
 
 # ============================================================================
@@ -762,6 +902,21 @@ class WalletPaymentButton(discord.ui.Button["PaymentOptionsView"]):
                     )
                 except Exception as e:
                     logger.error(f"Failed to record promo code usage: {e}", exc_info=True)
+            
+            # Send automated order confirmation
+            automated_cog = bot.get_cog("AutomatedMessagesCog")
+            if automated_cog:
+                try:
+                    await automated_cog.send_order_status_update(
+                        user_id=interaction.user.id,
+                        order_id=order_id,
+                        old_status="pending",
+                        new_status="processing",
+                        product_name=product_name,
+                        order_amount_cents=final_price
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send automated order confirmation: {e}", exc_info=True)
             
             logger.info(
                 "Wallet payment successful | User: %s | Order ID: %s | Amount: %s cents | Balance: %s -> %s cents | Promo: %s",
@@ -1190,13 +1345,85 @@ class ProductSelect(discord.ui.Select["ProductSelectView"]):
         # Determine the appropriate display name for the product
         product_name = _product_display_name(product)
         
+        # Get additional product info
+        service_name = product.get("service_name", "N/A")
+        additional_info = product.get("additional_info", "No additional information available.")
+        start_time = product.get("start_time", "N/A")
+        duration = product.get("duration", "N/A")
+        refill_period = product.get("refill_period", "N/A")
+        
+        # Get review stats
+        review_text = ""
+        try:
+            review_stats = await interaction.client.db.get_review_stats(int(product_id))  # type: ignore
+            if review_stats["total_reviews"] > 0:
+                avg_rating = review_stats["avg_rating"]
+                total_reviews = review_stats["total_reviews"]
+                stars = "⭐" * int(avg_rating) + "☆" * (5 - int(avg_rating))
+                review_text = f"\n{stars} **{avg_rating:.1f}/5** ({total_reviews} review{'s' if total_reviews != 1 else ''})"
+        except Exception:
+            pass
+        
+        # Stock status
+        stock = product.get("stock_quantity")
+        if stock is None:
+            stock_status = "🟢 Unlimited Stock"
+        elif stock == 0:
+            stock_status = "🔴 Out of Stock"
+        elif stock <= 10:
+            stock_status = f"🟡 {stock} left"
+        else:
+            stock_status = f"🟢 {stock} in stock"
+        
         embed = create_embed(
-            title=product_name,
-            description=f"**Base Price:** {format_usd(base_price_cents)}\n"
-            f"**Your Discount:** {discount_percent:.1f}%\n"
-            f"**Final Price:** {format_usd(final_price_cents)}",
+            title=f"📦 {product_name}",
+            description=(
+                f"**Service:** {service_name}\n"
+                f"**Product ID:** `{product_id}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
             color=discord.Color.blue(),
         )
+        
+        embed.add_field(
+            name="💰 Pricing",
+            value=(
+                f"**Base Price:** {format_usd(base_price_cents)}\n"
+                f"**Your Discount:** {discount_percent:.1f}%\n"
+                f"**Final Price:** {format_usd(final_price_cents)}"
+            ),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📦 Stock Status",
+            value=stock_status,
+            inline=True
+        )
+        
+        if review_text:
+            embed.add_field(
+                name="⭐ Reviews",
+                value=review_text,
+                inline=True
+            )
+        
+        embed.add_field(
+            name="⏱️ Delivery Info",
+            value=(
+                f"**Start Time:** {start_time}\n"
+                f"**Duration:** {duration}\n"
+                f"**Refill Period:** {refill_period}"
+            ),
+            inline=False
+        )
+        
+        if additional_info and additional_info != "N/A":
+            embed.add_field(
+                name="ℹ️ Additional Information",
+                value=additional_info[:1024],
+                inline=False
+            )
 
         operating_hours_text = render_operating_hours(interaction.client.config.operating_hours)  # type: ignore
         embed.add_field(
@@ -1229,7 +1456,7 @@ class BuyButton(discord.ui.Button["ProductActionView"]):
     def __init__(self, product_id: int) -> None:
         super().__init__(
             label="Buy with Wallet",
-            style=discord.ButtonStyle.green,
+            style=discord.ButtonStyle.success,
             custom_id=f"storefront:buy:{product_id}",
         )
         self.product_id = product_id
@@ -1484,7 +1711,7 @@ class StorefrontCog(commands.Cog):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def _show_products(
-        self, interaction: discord.Interaction, main_category: str, sub_category: str
+        self, interaction: discord.Interaction, main_category: str, sub_category: str, page: int = 1, quantity_filter: Optional[str] = None
     ) -> None:
         products = await self.bot.db.get_products_by_category(main_category, sub_category)
         
@@ -1497,57 +1724,121 @@ class StorefrontCog(commands.Cog):
         
         product_dicts = [dict(product) for product in products]
         
+        # Apply quantity filter if provided (e.g., "1000", "5000")
+        if quantity_filter:
+            import re
+            quantity_num = re.search(r'\d+', quantity_filter)
+            if quantity_num:
+                target_qty = quantity_num.group()
+                # Filter products that contain this quantity in their name
+                product_dicts = [
+                    p for p in product_dicts 
+                    if target_qty in p.get("variant_name", "").lower() or target_qty in p.get("service_name", "").lower()
+                ]
+        
+        # Pagination: 10 products per page
+        PRODUCTS_PER_PAGE = 10
+        total_pages = (len(product_dicts) + PRODUCTS_PER_PAGE - 1) // PRODUCTS_PER_PAGE
+        page = max(1, min(page, total_pages))
+        start_idx = (page - 1) * PRODUCTS_PER_PAGE
+        end_idx = start_idx + PRODUCTS_PER_PAGE
+        paginated_products = product_dicts[start_idx:end_idx]
+        
         embed = create_embed(
-            title=f"{main_category} {sub_category} (Service Selected)",
-            description="Browse the available services below.",
-            color=discord.Color.green(),
+            title=f"🛍️ {main_category} • {sub_category}",
+            description=(
+                f"**📄 Page {page}/{total_pages}** • **📦 {len(product_dicts)} Total Products**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blue(),
         )
         
-        product_list = []
-        for product in product_dicts:
+        if quantity_filter:
+            embed.add_field(
+                name="🔍 Filter Applied",
+                value=f"Showing products matching: **{quantity_filter}**",
+                inline=False
+            )
+        
+        # Group products into fields for better display
+        product_fields = []
+        current_field = ""
+        
+        for idx, product in enumerate(paginated_products, 1):
             variant_name = product["variant_name"]
             price_usd = format_usd(product["price_cents"])
-            start_time = product.get("start_time") or "N/A"
-            duration = product.get("duration") or "N/A"
-            refill_period = product.get("refill_period") or "N/A"
-            additional_info = product.get("additional_info") or "N/A"
+            product_id = product["id"]
+            service_name = product.get("service_name", "N/A")
             
             # Add stock status
             stock = product.get("stock_quantity")
             if stock is None:
-                stock_status = "🟢 In Stock (Unlimited)"
+                stock_status = "🟢 Unlimited"
             elif stock == 0:
                 stock_status = "🔴 Out of Stock"
             elif stock <= 10:
-                stock_status = f"🟡 Low Stock ({stock} left)"
+                stock_status = f"🟡 {stock} left"
             else:
-                stock_status = f"🟢 In Stock ({stock} available)"
+                stock_status = f"🟢 {stock} in stock"
             
-            product_text = (
-                f"**{variant_name}**\n"
-                f"Price: {price_usd}\n"
-                f"Stock: {stock_status}\n"
-                f"Start Time: {start_time}\n"
-                f"Duration: {duration}\n"
-                f"Refill: {refill_period}\n"
-                f"Additional: {additional_info}\n"
-                f"───────────"
+            # Get review stats
+            review_text = ""
+            try:
+                review_stats = await self.bot.db.get_review_stats(product_id)
+                if review_stats["total_reviews"] > 0:
+                    avg_rating = review_stats["avg_rating"]
+                    total_reviews = review_stats["total_reviews"]
+                    stars = "⭐" * int(avg_rating) + "☆" * (5 - int(avg_rating))
+                    review_text = f"\n{stars} **{avg_rating:.1f}/5** ({total_reviews} review{'s' if total_reviews != 1 else ''})"
+            except Exception:
+                pass
+            
+            # Build product entry
+            product_entry = (
+                f"**{idx}. {variant_name}**\n"
+                f"💰 Price: {price_usd} | 📦 Stock: {stock_status}{review_text}\n"
+                f"🆔 ID: `{product_id}`\n"
             )
-            product_list.append(product_text)
+            
+            # Add to field (max 1024 chars per field)
+            if len(current_field) + len(product_entry) > 1000:
+                product_fields.append(current_field)
+                current_field = product_entry
+            else:
+                current_field += product_entry + "\n"
         
-        description_text = "\n".join(product_list)
+        if current_field:
+            product_fields.append(current_field)
         
-        if len(description_text) > 4096:
-            description_text = description_text[:4090] + "..."
+        # Add product fields to embed
+        for i, field_content in enumerate(product_fields[:25], 1):  # Max 25 fields
+            embed.add_field(
+                name=f"📦 Products {i}" if len(product_fields) > 1 else "📦 Available Products",
+                value=field_content[:1024],
+                inline=False
+            )
         
-        embed.description = description_text
-        embed.set_footer(text="Select a service from the dropdown below, then press Open Ticket")
+        if not paginated_products:
+            embed.add_field(
+                name="❌ No Products Found",
+                value=f"No products match your filter.\n\n**Total in category:** {len(product_dicts)} products",
+                inline=False
+            )
         
-        view = ProductDisplayView(product_dicts, main_category, sub_category)
-        await interaction.response.edit_message(embed=embed, view=view)
+        embed.set_footer(
+            text=f"Select a product from dropdown • Page {page}/{total_pages} • Use filters to narrow results"
+        )
+        
+        view = ProductDisplayView(paginated_products, main_category, sub_category, page=page, total_pages=total_pages, quantity_filter=quantity_filter)
+        
+        # Use edit_message if already responded, otherwise send new message
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=view)
+        else:
+            await interaction.response.edit_message(embed=embed, view=view)
 
     async def _handle_open_ticket(
-        self, interaction: discord.Interaction, main_category: str, sub_category: str, product_id: int
+        self, interaction: discord.Interaction, main_category: str, sub_category: str, product_id: int, customization_data: Optional[dict] = None
     ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -1784,6 +2075,32 @@ class StorefrontCog(commands.Cog):
             ),
             inline=True,
         )
+        
+        # Add supplier info for admin (hidden from users)
+        # Check if supplier fields exist - use product dict directly
+        try:
+            # product is a dict from database row
+            if "supplier_id" in product and product.get("supplier_id"):
+                supplier_name = product.get("supplier_name", "Unknown Supplier")
+                supplier_service_id = product.get("supplier_service_id", "")
+                supplier_api_url = product.get("supplier_api_url", "")
+                supplier_price_cents = product.get("supplier_price_cents", 0)
+                
+                supplier_info = f"**Supplier:** {supplier_name}\n"
+                supplier_info += f"**Service ID:** {supplier_service_id}\n"
+                if supplier_price_cents:
+                    supplier_info += f"**Supplier Price:** {format_usd(supplier_price_cents)}\n"
+                if supplier_api_url:
+                    supplier_info += f"**API URL:** {supplier_api_url}"
+                
+                owner_embed.add_field(
+                    name="🔗 Supplier Info (Admin Only)",
+                    value=supplier_info,
+                    inline=False,
+                )
+        except Exception as e:
+            logger.debug(f"Could not add supplier info: {e}")
+        
         if additional_info and additional_info != "N/A":
             owner_embed.add_field(
                 name="ℹ️ Additional Info",

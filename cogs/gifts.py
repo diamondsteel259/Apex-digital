@@ -35,6 +35,7 @@ class GiftsCog(commands.Cog):
         return is_admin_from_bot(user, guild, self.bot)
 
     @app_commands.command(name="giftproduct")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         recipient="User to gift the product to",
         product_id="Product ID to gift",
@@ -126,6 +127,7 @@ class GiftsCog(commands.Cog):
             )
 
     @app_commands.command(name="giftwallet")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         recipient="User to gift wallet balance to",
         amount="Amount in dollars (e.g., 10.50)",
@@ -230,6 +232,7 @@ class GiftsCog(commands.Cog):
             )
 
     @app_commands.command(name="sendgift")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         recipient="User to send gift to",
         product_id="Product ID to gift",
@@ -336,6 +339,7 @@ class GiftsCog(commands.Cog):
             )
 
     @app_commands.command(name="giftcode")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         product_id="Product ID for gift code",
         expires_days="Days until expiration (default: 30)"

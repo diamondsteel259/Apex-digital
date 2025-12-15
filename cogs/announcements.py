@@ -110,6 +110,7 @@ class AnnouncementsCog(commands.Cog):
             return False
 
     @app_commands.command(name="announce")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         title="Announcement title",
         message="Announcement message",
@@ -290,6 +291,7 @@ class AnnouncementsCog(commands.Cog):
             )
 
     @app_commands.command(name="announcements")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(limit="Number of announcements to show")
     async def list_announcements(
         self,
@@ -347,6 +349,7 @@ class AnnouncementsCog(commands.Cog):
             )
 
     @app_commands.command(name="testannouncement")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         title="Announcement title",
         message="Announcement message"

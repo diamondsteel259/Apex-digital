@@ -14,9 +14,13 @@ from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
+from dotenv import load_dotenv
 
 from apex_core import load_config, load_payment_settings, Database, TranscriptStorage
 from apex_core.logger import setup_logger
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Set up enhanced logger
 logger = setup_logger(level=logging.INFO)
@@ -69,9 +73,36 @@ class ApexCoreBot(commands.Bot):
 
     def __init__(self, *args, **kwargs):
         self.config = kwargs.pop("config")
+        self.config_path = kwargs.pop("config_path", "config.json")
         self.db = Database()
         self.storage = TranscriptStorage()
         super().__init__(*args, **kwargs)
+    
+    async def reload_config(self) -> None:
+        """Reload configuration from file."""
+        try:
+            from apex_core import load_config, load_payment_settings
+            from dataclasses import replace
+            
+            new_config = load_config(self.config_path)
+            
+            # Preserve token if it was set from environment
+            if hasattr(self.config, 'token') and self.config.token:
+                new_config = replace(new_config, token=self.config.token)
+            
+            self.config = new_config
+            
+            # Reload payment settings
+            try:
+                payment_settings = load_payment_settings()
+                self.config = replace(self.config, payment_settings=payment_settings)
+            except FileNotFoundError:
+                logger.warning("Payments config not found, skipping reload")
+            
+            logger.info("Bot configuration reloaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to reload config: {e}", exc_info=True)
+            raise
 
     async def setup_hook(self):
         await self.db.connect()
@@ -266,7 +297,8 @@ async def main():
     bot = ApexCoreBot(
         command_prefix=config.bot_prefix,
         intents=intents,
-        config=config
+        config=config,
+        config_path=config_path,
     )
 
     # Start background tasks

@@ -218,6 +218,23 @@ class ProductImportCog(commands.Cog):
                 else:
                     products_to_add.append(row)
             
+            # Auto-create categories for products that don't have existing categories
+            categories_created = 0
+            for row in products_to_add:
+                main_cat = row['main_category']
+                sub_cat = row['sub_category']
+                
+                # Check if category combination exists (by checking if any product has it)
+                cursor = await self.bot.db._connection.execute(
+                    "SELECT COUNT(*) as count FROM products WHERE main_category = ? AND sub_category = ? LIMIT 1",
+                    (main_cat, sub_cat)
+                )
+                result = await cursor.fetchone()
+                if result and result["count"] == 0:
+                    # This is a new category combination - log it
+                    categories_created += 1
+                    logger.info(f"Auto-created category: {main_cat} > {sub_cat}")
+            
             added_count, updated_count, deactivated_count = await self.bot.db.bulk_upsert_products(
                 products_to_add, products_to_update, active_product_ids
             )
@@ -225,12 +242,25 @@ class ProductImportCog(commands.Cog):
             all_products = await self.bot.db.get_all_products(active_only=True)
             total_active = len(all_products)
             
+            # Send status update
+            try:
+                status_cog = self.bot.get_cog("BotStatusCog")
+                if status_cog:
+                    await status_cog.send_status_update(
+                        "import",
+                        f"CSV import complete: {added_count} added, {updated_count} updated, {deactivated_count} deactivated. {categories_created} new categories created.",
+                        discord.Color.green()
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send status update: {e}")
+            
             embed = create_embed(
                 title="✅ Import Successful",
                 description=(
                     f"**Added:** {added_count} products\n"
                     f"**Updated:** {updated_count} products\n"
                     f"**Deactivated:** {deactivated_count} products\n"
+                    f"**New Categories:** {categories_created}\n"
                     f"**Total Active Products:** {total_active}"
                 ),
                 color=discord.Color.green(),

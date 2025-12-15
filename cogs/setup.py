@@ -1042,11 +1042,19 @@ class SetupCog(commands.Cog):
                 embed, view = await self._create_help_panel()
             elif panel_type == "reviews":
                 embed, view = await self._create_reviews_panel()
+            elif panel_type == "welcome":
+                embed, view = await self._create_welcome_panel()
+            elif panel_type == "rules":
+                embed, view = await self._create_rules_panel()
+            elif panel_type == "faq":
+                embed, view = await self._create_faq_panel()
+            elif panel_type == "privacy":
+                embed, view = await self._create_privacy_panel()
             else:
                 raise SetupOperationError(
                     f"Unknown panel type: {panel_type}",
                     error_type="validation",
-                    actionable_suggestion="Valid panel types are: products, support, help, reviews"
+                    actionable_suggestion="Valid panel types are: products, support, help, reviews, welcome, rules, faq, privacy"
                 )
 
             # Check if this is an update to an existing panel
@@ -1385,26 +1393,31 @@ class SetupCog(commands.Cog):
                 return {"valid": False, "issues": issues}
                 
             embed = message.embeds[0]
-            # Updated to match actual title: "❓ How to Use Apex Core"
-            if not embed.title or "how to use apex core" not in embed.title.lower():
+            # Check for help panel title - accepts multiple variations
+            valid_titles = ["apex core", "complete guide", "help", "how to"]
+            if not embed.title:
                 issues.append("Invalid or missing help panel title")
+            else:
+                title_lower = embed.title.lower()
+                if not any(valid in title_lower for valid in valid_titles):
+                    issues.append("Invalid or missing help panel title")
             
-            # Check for required fields instead of buttons
-            # The help panel now uses an embed-only design without interactive buttons
-            required_topics = ["browse products", "make purchases", "open tickets", "refunds"]
-            found_topics = set()
+            # Check for required fields - help panel should have informative fields
+            # The help panel uses an embed-only design without interactive buttons
+            required_keywords = ["browse", "purchase", "ticket", "refund", "wallet", "review"]
+            found_keywords = set()
             
             if embed.fields:
                 for field in embed.fields:
-                    field_name = field.name.lower()
-                    for topic in required_topics:
-                        if topic in field_name:
-                            found_topics.add(topic)
+                    field_text = (field.name + " " + (field.value or "")).lower()
+                    for keyword in required_keywords:
+                        if keyword in field_text:
+                            found_keywords.add(keyword)
             
-            missing_topics = [topic for topic in required_topics if topic not in found_topics]
-            
-            if missing_topics:
-                issues.append(f"Missing help sections: {', '.join(missing_topics)}")
+            # At least 3 of the required keywords should be present
+            if len(found_keywords) < 3:
+                missing = [k for k in required_keywords if k not in found_keywords]
+                issues.append(f"Missing help sections: {', '.join(missing[:3])}")
             
             return {"valid": len(issues) == 0, "issues": issues}
             
@@ -1454,105 +1467,520 @@ class SetupCog(commands.Cog):
             "support": "🛟",
             "help": "❓",
             "reviews": "⭐",
+            "welcome": "🎉",
+            "rules": "📜",
+            "faq": "❓",
+            "privacy": "🔒",
         }
         return emojis.get(panel_type, "📌")
 
     async def _create_product_panel(self) -> tuple[discord.Embed, discord.ui.View]:
-        """Create the product catalog panel."""
+        """Create the product catalog panel - Mokahub style."""
         from cogs.storefront import CategorySelectView
 
         categories = await self.bot.db.get_distinct_main_categories()
 
         embed = create_embed(
-            title="🛍️ Apex Core: Products",
-            description="Select a product from the drop-down menu to view details and open a support ticket.",
-            color=discord.Color.gold(),
+            title="🛍️ Apex Core: Product Catalog",
+            description=(
+                "**↓ Select a category from the dropdown menu to view products and open a support ticket.**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
         )
-        embed.set_footer(text="Apex Core • Storefront")
+        
+        # Add visual instructions
+        embed.add_field(
+            name="📦 How to Order",
+            value=(
+                "1️⃣ **Select Category** - Choose from dropdown below\n"
+                "2️⃣ **Browse Products** - View available items\n"
+                "3️⃣ **Open Ticket** - Click to start your order\n"
+                "4️⃣ **Complete Payment** - Choose your payment method"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="✨ Apex Core • Premium Digital Services")
+        # Note: User can add image URL later if they want visual like Mokahub
+        # embed.set_image(url="https://your-image-url.com/products-banner.png")
 
         view = CategorySelectView(categories) if categories else discord.ui.View()
         return embed, view
 
     async def _create_support_panel(self) -> tuple[discord.Embed, discord.ui.View]:
-        """Create the support & refund buttons panel."""
+        """Create the support & refund buttons panel - Mokahub style."""
         from cogs.ticket_management import TicketPanelView
 
         embed = create_embed(
-            title="🛟 Support Options",
-            description="Need help? Our support team is here to assist you!",
-            color=discord.Color.blue(),
+            title="🛟 Apex Core: Support Center",
+            description=(
+                "**Need assistance? Our support team is here to help!**\n\n"
+                "Choose an option below to get started.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 255, 255),  # Cyan - Apex Digital branding
         )
 
         embed.add_field(
-            name="🛒 General Support",
-            value="Click to open a general support ticket for product questions or issues.",
-            inline=False,
+            name="💬 General Support",
+            value=(
+                "**Questions & Help**\n"
+                "• Product inquiries\n"
+                "• Technical support\n"
+                "• Account assistance\n"
+                "• General questions"
+            ),
+            inline=True,
         )
 
         embed.add_field(
-            name="🛡️ Refund Support",
-            value="Click to request a refund for an existing order.",
-            inline=False,
+            name="💰 Refund Requests",
+            value=(
+                "**Request a Refund**\n"
+                "• Order issues\n"
+                "• Service problems\n"
+                "• Billing disputes\n"
+                "• Other refunds"
+            ),
+            inline=True,
+        )
+        
+        embed.add_field(
+            name="⚡ Quick Response",
+            value="**Average Response:** < 24 hours\n**Support Hours:** 24/7",
+            inline=False
         )
 
-        embed.set_footer(text="Apex Core • Support System")
+        embed.set_footer(text="✨ Apex Core • Professional Support")
+        # embed.set_image(url="https://your-image-url.com/support-banner.png")
 
         view = TicketPanelView()
-
         return embed, view
 
     async def _create_help_panel(self) -> tuple[discord.Embed, discord.ui.View]:
-        """Create the help guide panel."""
+        """Create the help guide panel - Mokahub style."""
         embed = create_embed(
-            title="❓ How to Use Apex Core",
-            description="Everything you need to know about our services.",
-            color=discord.Color.green(),
+            title="❓ Apex Core: Complete Guide",
+            description=(
+                "**Everything you need to know to get started!**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(138, 43, 226),  # Blue-violet - Apex Digital branding
         )
 
         embed.add_field(
-            name="📖 How to Browse Products",
-            value="React to the Product Catalog panel with numbers to navigate categories and view available products.",
+            name="🛍️ How to Browse Products",
+            value=(
+                "1. Go to the **🛍️ Products** channel\n"
+                "2. Select a **category** from the dropdown\n"
+                "3. Choose a **sub-category**\n"
+                "4. Browse available **products** and view details"
+            ),
             inline=False,
         )
 
         embed.add_field(
             name="💳 How to Make Purchases",
-            value="Once you've selected a product, click 'Open Ticket' and follow the payment instructions.",
+            value=(
+                "1. Select your desired **product**\n"
+                "2. Click **📩 Open Ticket** button\n"
+                "3. Choose your **payment method**\n"
+                "4. Complete payment and wait for delivery"
+            ),
             inline=False,
         )
 
         embed.add_field(
-            name="💰 How to Use Your Wallet",
-            value="Use `/wallet balance` to check your balance, `/deposit` to add funds, and pay directly with your wallet balance.",
+            name="💰 Wallet System",
+            value=(
+                "**Commands:**\n"
+                "• `/balance` - Check your wallet balance\n"
+                "• `/deposit` - Add funds to your wallet\n"
+                "• `/transactions` - View transaction history\n\n"
+                "Pay directly with your wallet balance for instant purchases!"
+            ),
             inline=False,
         )
 
         embed.add_field(
-            name="🎫 How to Open Tickets",
-            value="Click the 'Open Ticket' button when browsing products, or use the Support Options panel.",
+            name="🎫 Support Tickets",
+            value=(
+                "**Ways to open tickets:**\n"
+                "• Click **📩 Open Ticket** when browsing products\n"
+                "• Use the **🛟 Support Options** panel\n"
+                "• Use `/ticket support` command\n\n"
+                "Our team will assist you promptly!"
+            ),
             inline=False,
         )
 
         embed.add_field(
-            name="💔 How to Request Refunds",
-            value="Use the 'Refund Support' button in the Support Options panel to submit a refund request.",
+            name="💔 Refund Requests",
+            value=(
+                "**To request a refund:**\n"
+                "• Click **🛡️ Refund Support** in the Support panel\n"
+                "• Use `/submitrefund` command\n"
+                "• Provide your order ID and reason\n\n"
+                "All requests are reviewed by our team."
+            ),
             inline=False,
         )
 
         embed.add_field(
-            name="👥 How to Invite Friends",
-            value="Use `/referral invite` to get your unique referral link and earn cashback from your friends' purchases!",
+            name="👥 Referral Program",
+            value=(
+                "**Earn cashback by referring friends!**\n"
+                "• `/invite` - Get your referral link\n"
+                "• `/setref <code>` - Set your referrer\n"
+                "• `/invites` - View your referral earnings\n\n"
+                "Both you and your friend benefit!"
+            ),
             inline=False,
         )
 
         embed.add_field(
-            name="📞 Need Help?",
-            value="Open a support ticket and our team will assist you within operating hours.",
+            name="⭐ Reviews & Rewards",
+            value=(
+                "**Share your experience and earn rewards!**\n"
+                "• `/review` - Submit a review\n"
+                "• Earn **@Apex Insider** role\n"
+                "• Get **0.5% discount** on future purchases"
+            ),
             inline=False,
         )
 
-        embed.set_footer(text="Apex Core • Help & Support")
+        embed.add_field(
+            name="📞 Still Need Help?",
+            value="Open a support ticket and our team will assist you within **24 hours** during business hours.",
+            inline=False,
+        )
 
+        embed.set_footer(text="✨ Apex Core • Complete User Guide")
+
+        return embed, discord.ui.View()
+    
+    async def _create_welcome_panel(self) -> tuple[discord.Embed, discord.ui.View]:
+        """Create the welcome panel."""
+        embed = create_embed(
+            title="🎉 Welcome to Apex Core!",
+            description=(
+                "**We're excited to have you here!** 🚀\n\n"
+                "This server is your one-stop shop for premium digital services and products.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+        )
+        
+        embed.add_field(
+            name="🚀 Getting Started",
+            value=(
+                "1. 📖 Read #📜-rules to understand our policies\n"
+                "2. ❓ Check #❓-faq for common questions\n"
+                "3. 🛍️ Browse #🛍️-products to see what we offer\n"
+                "4. 💰 Use code **WELCOME10** for 10% off your first purchase!"
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🆘 Need Help?",
+            value=(
+                "• Open a support ticket in #🛟-support\n"
+                "• Check #❓-help for detailed guides\n"
+                "• Ask in #💡-suggestions for feedback"
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🎁 Earn Rewards",
+            value=(
+                "• Leave reviews to earn @⭐ Apex Insider role\n"
+                "• Refer friends to earn cashback\n"
+                "• Reach VIP tiers for exclusive benefits"
+            ),
+            inline=False,
+        )
+        
+        embed.set_footer(text="✨ Apex Core • Welcome to the Community")
+        return embed, discord.ui.View()
+    
+    async def _create_rules_panel(self) -> tuple[discord.Embed, discord.ui.View]:
+        """Create the rules and terms of service panel."""
+        import os
+        from datetime import datetime
+        
+        # Load TOS from markdown file
+        tos_content = ""
+        tos_path = os.path.join("content", "terms_of_service.md")
+        if os.path.exists(tos_path):
+            try:
+                with open(tos_path, "r", encoding="utf-8") as f:
+                    tos_content = f.read()
+                    # Replace date placeholder
+                    tos_content = tos_content.replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+            except Exception as e:
+                logger.warning(f"Failed to load TOS file: {e}")
+                tos_content = ""
+        
+        embed = create_embed(
+            title="📜 Rules & Terms of Service",
+            description=(
+                "**Please read and follow these rules to ensure a positive experience for everyone.**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(138, 43, 226),  # Blue-violet - Apex Digital branding
+        )
+        
+        embed.add_field(
+            name="📋 Server Rules",
+            value=(
+                "1. **Be Respectful** - Treat all members with respect and kindness\n"
+                "2. **No Spam** - Do not spam messages, mentions, or channels\n"
+                "3. **No Scamming** - Scamming or fraud will result in immediate ban\n"
+                "4. **Follow Discord TOS** - All Discord Terms of Service apply\n"
+                "5. **Use Appropriate Channels** - Post in the correct channels\n"
+                "6. **No Advertising** - Do not advertise other services without permission"
+            ),
+            inline=False,
+        )
+        
+        # Add TOS content if available
+        if tos_content:
+            # Split TOS into manageable chunks (Discord embed field limit is 1024 chars)
+            tos_sections = []
+            current_section = ""
+            
+            for line in tos_content.split("\n"):
+                if line.startswith("###") or line.startswith("##"):
+                    if current_section:
+                        tos_sections.append(current_section.strip())
+                    current_section = line + "\n"
+                else:
+                    current_section += line + "\n"
+            
+            if current_section:
+                tos_sections.append(current_section.strip())
+            
+            # Add key TOS sections
+            for section in tos_sections[:5]:  # Limit to 5 sections to avoid embed limits
+                if len(section) > 1024:
+                    section = section[:1021] + "..."
+                if section.strip():
+                    # Extract section title
+                    title = section.split("\n")[0].replace("#", "").strip()[:256]
+                    if title:
+                        embed.add_field(
+                            name=title,
+                            value=section[:1024],
+                            inline=False
+                        )
+        else:
+            # Fallback if TOS file not found
+            embed.add_field(
+                name="💳 Payment & Refund Policy",
+                value=(
+                    "• All payments are final unless refund is approved\n"
+                    "• Refunds available within 7 days of purchase\n"
+                    "• Refund requests must include valid reason\n"
+                    "• Processing fees may apply to refunds"
+                ),
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="⚖️ Terms of Service",
+                value=(
+                    "By using Apex Core services, you agree to:\n"
+                    "• Use services only for lawful purposes\n"
+                    "• Not attempt to circumvent security measures\n"
+                    "• Not share account access with others\n"
+                    "• Follow all server rules and policies"
+                ),
+                inline=False,
+            )
+        
+        embed.add_field(
+            name="📞 Questions?",
+            value="If you have questions about our rules or terms, please open a support ticket in #🛟-support.",
+            inline=False,
+        )
+        
+        embed.set_footer(text="✨ Apex Core • Rules & Terms of Service")
+        return embed, discord.ui.View()
+    
+    async def _create_privacy_panel(self) -> tuple[discord.Embed, discord.ui.View]:
+        """Create the privacy policy panel."""
+        import os
+        from datetime import datetime
+        
+        # Load privacy policy from markdown file
+        privacy_content = ""
+        privacy_path = os.path.join("content", "privacy_policy.md")
+        if os.path.exists(privacy_path):
+            try:
+                with open(privacy_path, "r", encoding="utf-8") as f:
+                    privacy_content = f.read()
+                    # Replace date placeholder
+                    privacy_content = privacy_content.replace("{date}", datetime.now().strftime("%Y-%m-%d"))
+            except Exception as e:
+                logger.warning(f"Failed to load privacy policy file: {e}")
+                privacy_content = ""
+        
+        embed = create_embed(
+            title="🔒 Privacy Policy",
+            description=(
+                "**Your privacy is important to us. This policy explains how we collect, use, and protect your data.**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+        )
+        
+        if privacy_content:
+            # Split privacy policy into manageable chunks
+            privacy_sections = []
+            current_section = ""
+            current_title = ""
+            
+            for line in privacy_content.split("\n"):
+                if line.startswith("###"):
+                    if current_section and current_title:
+                        privacy_sections.append((current_title, current_section.strip()))
+                    current_title = line.replace("###", "").strip()
+                    current_section = ""
+                elif line.startswith("##"):
+                    if current_section and current_title:
+                        privacy_sections.append((current_title, current_section.strip()))
+                    current_title = line.replace("##", "").strip()
+                    current_section = ""
+                else:
+                    current_section += line + "\n"
+            
+            if current_section and current_title:
+                privacy_sections.append((current_title, current_section.strip()))
+            
+            # Add key privacy sections (limit to avoid embed limits)
+            for title, content in privacy_sections[:6]:
+                if len(content) > 1024:
+                    content = content[:1021] + "..."
+                if content.strip():
+                    embed.add_field(
+                        name=title[:256],
+                        value=content[:1024],
+                        inline=False
+                    )
+        else:
+            # Fallback if privacy file not found
+            embed.add_field(
+                name="📊 Data Collection",
+                value=(
+                    "We collect only necessary data:\n"
+                    "• Discord User ID (for account management)\n"
+                    "• Wallet balance (for payments)\n"
+                    "• Order history (for support)\n"
+                    "• Transaction history (for records)"
+                ),
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="🔒 Data Security",
+                value=(
+                    "• All data stored locally in secure database\n"
+                    "• No data sold or shared with third parties\n"
+                    "• PIN protection for sensitive operations\n"
+                    "• Regular security reviews"
+                ),
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="🗑️ Data Deletion",
+                value=(
+                    "You can request data deletion at any time:\n"
+                    "• Use `/deletedata` command\n"
+                    "• Staff will process within 7 days\n"
+                    "• Some data may be retained for legal purposes"
+                ),
+                inline=False,
+            )
+        
+        embed.add_field(
+            name="📞 Questions?",
+            value="For privacy concerns, open a support ticket in #🛟-support or use `/deletedata` to request data deletion.",
+            inline=False,
+        )
+        
+        embed.set_footer(text="✨ Apex Core • Privacy Policy")
+        return embed, discord.ui.View()
+    
+    async def _create_faq_panel(self) -> tuple[discord.Embed, discord.ui.View]:
+        """Create the FAQ panel."""
+        embed = create_embed(
+            title="❓ Frequently Asked Questions",
+            description=(
+                "**Find answers to common questions instantly!**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+        )
+        
+        embed.add_field(
+            name="💳 Payment Questions",
+            value=(
+                "**Q: What payment methods do you accept?**\n"
+                "A: We accept wallet, Binance Pay, PayPal, crypto, and more.\n\n"
+                "**Q: How do I add funds to my wallet?**\n"
+                "A: Use `/deposit` to open a deposit ticket.\n\n"
+                "**Q: Can I get a refund?**\n"
+                "A: Yes, refunds available within 7 days. Use `/submitrefund`."
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🛍️ Product Questions",
+            value=(
+                "**Q: How do I browse products?**\n"
+                "A: Go to #🛍️-products and use the dropdown menu.\n\n"
+                "**Q: How do I purchase?**\n"
+                "A: Select product → Click 'Open Ticket' → Choose payment → Complete.\n\n"
+                "**Q: What if a product is out of stock?**\n"
+                "A: Check back later or contact sales for restock ETA."
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🎫 Ticket Questions",
+            value=(
+                "**Q: How do I open a support ticket?**\n"
+                "A: Click 'Open Ticket' when browsing or use buttons in #🛟-support.\n\n"
+                "**Q: How long do tickets stay open?**\n"
+                "A: Tickets auto-close after 48 hours of inactivity."
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="⭐ Reviews & Rewards",
+            value=(
+                "**Q: How do I leave a review?**\n"
+                "A: Use `/review` command with your order ID and rating.\n\n"
+                "**Q: What rewards do I get?**\n"
+                "A: Approved reviews earn @⭐ Apex Insider role and 0.5% discount."
+            ),
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🆘 Still Need Help?",
+            value="Open a support ticket in #🛟-support or check #❓-help for detailed guides.",
+            inline=False,
+        )
+        
+        embed.set_footer(text="✨ Apex Core • FAQ")
         return embed, discord.ui.View()
 
     async def _create_reviews_panel(self) -> tuple[discord.Embed, discord.ui.View]:
@@ -1560,7 +1988,7 @@ class SetupCog(commands.Cog):
         embed = create_embed(
             title="⭐ Share Your Experience",
             description="Help other customers and earn rewards!",
-            color=discord.Color.gold(),
+            color=discord.Color.from_rgb(0, 255, 255),  # Cyan - Apex Digital branding
         )
 
         embed.add_field(
@@ -1637,11 +2065,11 @@ class SetupCog(commands.Cog):
                 "New full server setup"
             )
         
-        # Create new session
+        # Create new session - include all panel types
         session = SetupSession(
             guild_id=interaction.guild.id,
             user_id=interaction.user.id,
-            panel_types=["products", "support", "help", "reviews"],
+            panel_types=["products", "support", "help", "reviews", "welcome", "rules", "faq"],
             current_index=0,
             completed_panels=[],
             rollback_stack=[],
@@ -1707,14 +2135,19 @@ class SetupCog(commands.Cog):
         reused_channels: List[discord.TextChannel] = []
         panel_deployments: Dict[str, discord.TextChannel] = {}  # panel_type -> channel
         
+        # Store progress message for editing (ephemeral thinking responses can't be edited)
+        progress_message = None
+        
         try:
-            # Step 0: Clean up stale panel records before fresh deployment
-            await interaction.followup.send(
-                "🏗️ **Full Server Setup**\n\n"
-                "**Step 0/4:** Cleaning up stale panel records...",
-                ephemeral=True
+            # Step 0: Comprehensive cleanup - prepare for fresh launch
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description="**Step 0/5:** 🧹 Comprehensive cleanup (preparing for launch)...",
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
             )
+            progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
             
+            # Clean up stale panel records
             existing_panels = await self.bot.db.get_deployments(guild.id)
             cleaned_count = 0
             
@@ -1725,63 +2158,274 @@ class SetupCog(commands.Cog):
             if cleaned_count > 0:
                 logger.info(f"Cleaned up {cleaned_count} stale panel records for guild {guild.id}")
             
-            # Step 1: Provision roles
-            await interaction.followup.send(
-                "🏗️ **Full Server Setup**\n\n"
-                "**Step 1/4:** Provisioning roles...",
-                ephemeral=True
+            # Clean up old ticket messages
+            deleted_messages = 0
+            ticket_channels_cleaned = 0
+            
+            # Find all ticket channels
+            for channel in guild.text_channels:
+                if channel.name.startswith("ticket-"):
+                    try:
+                        # Delete all messages in ticket channels (except pinned)
+                        async for message in channel.history(limit=None):
+                            if not message.pinned:
+                                try:
+                                    await message.delete()
+                                    deleted_messages += 1
+                                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                                    pass
+                        ticket_channels_cleaned += 1
+                        logger.info(f"Cleaned up messages in ticket channel: {channel.name}")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        logger.warning(f"Could not clean ticket channel {channel.name}: {e}")
+            
+            # Clean up old embeds/panels in blueprint channels
+            blueprint_channel_names = set()
+            for cat_bp in blueprint.categories:
+                for ch_bp in cat_bp.channels:
+                    blueprint_channel_names.add(ch_bp.name)
+            
+            cleaned_panels = 0
+            for channel in guild.text_channels:
+                if channel.name in blueprint_channel_names:
+                    try:
+                        # Delete old bot messages (panels/embeds)
+                        async for message in channel.history(limit=50):
+                            if message.author == guild.me and not message.pinned:
+                                try:
+                                    await message.delete()
+                                    cleaned_panels += 1
+                                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                                    pass
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+            
+            logger.info(
+                f"Cleanup complete: {cleaned_count} panels, {deleted_messages} messages, "
+                f"{ticket_channels_cleaned} ticket channels, {cleaned_panels} old panels"
             )
             
-            for role_bp in blueprint.roles:
+            # Update progress after cleanup
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 0/5:** ✅ Cleanup complete\n"
+                    f"• {cleaned_count} stale panel records removed\n"
+                    f"• {deleted_messages} old messages deleted\n"
+                    f"• {ticket_channels_cleaned} ticket channels cleaned\n"
+                    f"• {cleaned_panels} old panels removed\n\n"
+                    f"**Step 0.5/5:** 🗑️ Removing old resources..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+            )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
+            
+            # Step 0.5: DELETE EVERYTHING - Fresh start (like Mokahub)
+            blueprint_roles = {role_bp.name for role_bp in blueprint.roles}
+            blueprint_categories = {cat_bp.name for cat_bp in blueprint.categories}
+            blueprint_channel_names = set()
+            for cat_bp in blueprint.categories:
+                for ch_bp in cat_bp.channels:
+                    blueprint_channel_names.add(ch_bp.name)
+            
+            # DELETE ALL ROLES (except @everyone, managed bots, and blueprint roles)
+            deleted_roles = 0
+            for role in guild.roles:
+                # Keep: @everyone, managed roles (bots), and roles that match blueprint
+                if role == guild.default_role or role.managed or role.name in blueprint_roles:
+                    continue
+                try:
+                    await role.delete(reason="Apex Core setup: Fresh start - deleting all old roles")
+                    deleted_roles += 1
+                    logger.info(f"Deleted role: {role.name}")
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    logger.warning(f"Could not delete role {role.name}: {e}")
+            
+            # DELETE ALL CATEGORIES - recreate fresh (even if name matches)
+            deleted_categories = 0
+            logger.info(f"🔍 Checking {len(guild.categories)} categories...")
+            logger.info(f"📋 Blueprint categories: {sorted(blueprint_categories)}")
+            
+            for category in guild.categories:
+                # DELETE ALL - we'll recreate fresh
+                try:
+                    # Move all channels out first (to uncategorized)
+                    for channel in category.channels:
+                        try:
+                            await channel.edit(category=None, reason="Apex Core setup: Moving channel before category deletion")
+                        except:
+                            pass
+                    await category.delete(reason="Apex Core setup: Fresh start - deleting to recreate fresh")
+                    deleted_categories += 1
+                    logger.info(f"🗑️  DELETED category: '{category.name}' (recreating fresh)")
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    logger.warning(f"❌ Could not delete category '{category.name}': {e}")
+            
+            logger.info(f"✅ Deleted {deleted_categories} categories total")
+            
+            # DELETE ALL CHANNELS (except the channel where setup is running)
+            # STRICT: Only keep EXACT matches (including emojis) - delete everything else
+            deleted_channels = 0
+            setup_channel_id = interaction.channel.id if interaction.channel else None
+            
+            logger.info(f"🔍 Checking {len(guild.text_channels)} channels against blueprint...")
+            logger.info(f"📋 Blueprint channels: {sorted(blueprint_channel_names)}")
+            
+            for channel in guild.text_channels:
+                # Keep the channel where setup command is being run (so user can see progress)
+                if channel.id == setup_channel_id:
+                    logger.info(f"⏭️  Keeping setup channel: {channel.name} (ID: {channel.id})")
+                    continue
+                
+                # STRICT MATCH: Only keep if EXACT name match (including emojis)
+                if channel.name not in blueprint_channel_names:
+                    # DELETE - doesn't match exactly
+                    try:
+                        await channel.delete(reason="Apex Core setup: Fresh start - deleting channel that doesn't match blueprint exactly")
+                        deleted_channels += 1
+                        logger.info(f"🗑️  DELETED channel: '{channel.name}' (not in blueprint)")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        logger.warning(f"❌ Could not delete channel '{channel.name}': {e}")
+                else:
+                    # Even if name matches, DELETE it - we'll recreate fresh
+                    try:
+                        await channel.delete(reason="Apex Core setup: Fresh start - deleting to recreate fresh")
+                        deleted_channels += 1
+                        logger.info(f"🗑️  DELETED channel: '{channel.name}' (recreating fresh)")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        logger.warning(f"❌ Could not delete channel '{channel.name}': {e}")
+            
+            logger.info(f"✅ Deleted {deleted_channels} channels total")
+            
+            # Step 1: Provision roles
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 0/5:** ✅ Cleanup complete\n"
+                    f"**Step 0.5/5:** ✅ Removed {deleted_roles} old roles, {deleted_categories} old categories, {deleted_channels} old channels\n"
+                    f"**Step 1/5:** 🎭 Provisioning roles with emojis and colors..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+            )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
+            
+            logger.info(f"🎭 Creating {len(blueprint.roles)} roles...")
+            for idx, role_bp in enumerate(blueprint.roles):
+                logger.info(f"🎭 [{idx+1}/{len(blueprint.roles)}] Processing role: '{role_bp.name}'")
                 role, is_new = await self._provision_role(guild, role_bp, session)
                 if is_new:
                     created_roles.append(role)
+                    logger.info(f"✅ Created role '{role_bp.name}' (ID: {role.id})")
                 else:
                     reused_roles.append(role)
+                    logger.info(f"🔄 Updated role '{role_bp.name}' (ID: {role.id})")
+            
+            # Assign all roles to server owner
+            try:
+                owner = guild.owner
+                if owner:
+                    all_roles = created_roles + reused_roles
+                    roles_to_add = [role for role in all_roles if role not in owner.roles and role != guild.default_role]
+                    if roles_to_add:
+                        await owner.add_roles(*roles_to_add, reason="Apex Core setup: Auto-assign all roles to server owner")
+                        logger.info(f"Assigned {len(roles_to_add)} role(s) to server owner {owner.name} ({owner.id})")
+            except Exception as e:
+                logger.warning(f"Failed to assign roles to server owner: {e}")
             
             # Step 2: Provision categories and channels
-            await interaction.edit_original_response(
-                content="🏗️ **Full Server Setup**\n\n"
-                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
-                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
-                        f"**Step 2/4:** Provisioning categories and channels..."
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 0/5:** ✅ Cleanup complete\n"
+                    f"**Step 0.5/5:** ✅ Removed old resources\n"
+                    f"**Step 1/5:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} updated)\n"
+                    f"**Step 2/5:** 📁 Provisioning categories and channels..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
             )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
             
             # Build role mapping for permission overwrites
             role_map = self._build_role_map(guild)
             
-            for category_bp in blueprint.categories:
+            # Sort categories by position to ensure correct order
+            sorted_categories = sorted(blueprint.categories, key=lambda c: c.position if c.position is not None else 999)
+            
+            logger.info(f"📁 Creating {len(sorted_categories)} categories in order...")
+            for cat_idx, category_bp in enumerate(sorted_categories):
+                logger.info(f"📁 [{cat_idx+1}/{len(sorted_categories)}] Processing category: '{category_bp.name}'")
                 category, is_new_cat = await self._provision_category(
                     guild, category_bp, role_map, session
                 )
-                if is_new_cat:
-                    created_categories.append(category)
-                else:
-                    reused_categories.append(category)
+                # Always treat as new since we delete and recreate
+                created_categories.append(category)
+                logger.info(f"✅ Category '{category_bp.name}' ready (ID: {category.id}, Position: {category.position})")
                 
-                # Provision channels in this category
-                for channel_bp in category_bp.channels:
+                # Provision channels in this category (in order)
+                logger.info(f"📝 Creating {len(category_bp.channels)} channels in '{category_bp.name}'...")
+                for ch_idx, channel_bp in enumerate(category_bp.channels):
+                    logger.info(f"📝 [{ch_idx+1}/{len(category_bp.channels)}] Processing channel: '{channel_bp.name}'")
                     channel, is_new_chan = await self._provision_channel(
                         guild, category, channel_bp, role_map, session
                     )
-                    if is_new_chan:
-                        created_channels.append(channel)
-                    else:
-                        reused_channels.append(channel)
+                    # Always treat as new since we delete and recreate
+                    created_channels.append(channel)
+                    logger.info(f"✅ Channel '{channel_bp.name}' ready (ID: {channel.id}, Position: {channel.position})")
+                    
+                    # Set channel position within category (order matters)
+                    try:
+                        # Position channels in order within category
+                        # Discord positions: lower number = higher in list
+                        # We want first channel in blueprint to be first in category
+                        # Use category position as base, add channel index
+                        base_pos = category.position if category.position is not None else 0
+                        target_position = base_pos + idx
+                        if channel.position != target_position:
+                            await channel.edit(position=target_position, reason="Apex Core setup: Order channel in category")
+                            logger.debug(f"Set channel '{channel.name}' position to {target_position} in '{category.name}'")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        logger.debug(f"Could not set position for channel '{channel.name}': {e}")
                     
                     # Track channels that need panel deployment
                     if channel_bp.panel_type:
                         panel_deployments[channel_bp.panel_type] = channel
             
             # Step 3: Deploy panels
-            await interaction.edit_original_response(
-                content="🏗️ **Full Server Setup**\n\n"
-                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
-                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
-                        f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
-                        f"{len(created_channels)} channels\n"
-                        f"**Step 3/4:** Deploying panels..."
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 1/5:** ✅ Provisioned roles\n"
+                    f"**Step 2/5:** ✅ Provisioned {len(created_categories)} categories, "
+                    f"{len(created_channels)} channels\n"
+                    f"**Step 3/5:** 📋 Deploying professional panels..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
             )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
             
             # Update session eligible channels
             session.eligible_channels = await self._precompute_eligible_channels(guild)
@@ -1798,16 +2442,93 @@ class SetupCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"Failed to deploy {panel_type} panel: {e}")
             
-            # Step 4: Generate audit log
-            await interaction.edit_original_response(
-                content="🏗️ **Full Server Setup**\n\n"
-                        f"**Step 0/4:** ✅ Cleaned up {cleaned_count} stale panel records\n"
-                        f"**Step 1/4:** ✅ Provisioned {len(created_roles)} roles ({len(reused_roles)} reused)\n"
-                        f"**Step 2/4:** ✅ Provisioned {len(created_categories)} categories, "
-                        f"{len(created_channels)} channels\n"
-                        f"**Step 3/4:** ✅ Deployed {len(deployed_panels)} panels\n"
-                        f"**Step 4/4:** Generating audit log..."
+            # Step 4: Log IDs to config
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 2/5:** ✅ Provisioned categories and channels\n"
+                    f"**Step 3/5:** ✅ Deployed {len(deployed_panels)} panels\n"
+                    f"**Step 4/5:** 💾 Logging IDs to config..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
             )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
+            
+            # Log all provisioned IDs to config
+            try:
+                logger.info("📊 Starting ID collection for config.json...")
+                
+                # Build mappings for roles, categories, and channels
+                role_mapping = {}
+                all_roles = created_roles + reused_roles
+                for role in all_roles:
+                    if role.name not in role_mapping:
+                        role_mapping[role.name] = role.id
+                        logger.info(f"📝 Role ID: {role.name} = {role.id}")
+                
+                category_mapping = {}
+                all_categories = created_categories + reused_categories
+                for category in all_categories:
+                    if category.name not in category_mapping:
+                        category_mapping[category.name] = category.id
+                        logger.info(f"📝 Category ID: {category.name} = {category.id}")
+                
+                # Collect ALL channels from blueprint (ensures we get everything)
+                channel_mapping = {}
+                
+                # First, collect from blueprint to ensure we get all channels
+                logger.info("🔍 Collecting channel IDs from blueprint...")
+                for category_bp in blueprint.categories:
+                    for channel_bp in category_bp.channels:
+                        # Find the actual channel in guild
+                        channel = discord.utils.get(guild.text_channels, name=channel_bp.name)
+                        if channel and channel.name not in channel_mapping:
+                            channel_mapping[channel.name] = channel.id
+                            logger.info(f"📝 Channel ID (blueprint): {channel.name} = {channel.id}")
+                
+                # Also add any channels from created/reused lists that might have been missed
+                logger.info("🔍 Collecting channel IDs from created/reused lists...")
+                all_channels = created_channels + reused_channels
+                for channel in all_channels:
+                    if channel.name not in channel_mapping:
+                        channel_mapping[channel.name] = channel.id
+                        logger.info(f"📝 Channel ID (list): {channel.name} = {channel.id}")
+                
+                logger.info(f"📊 Total IDs collected: {len(role_mapping)} roles, {len(category_mapping)} categories, {len(channel_mapping)} channels")
+                
+                await self._log_provisioned_ids(
+                    roles=role_mapping if role_mapping else None,
+                    categories=category_mapping if category_mapping else None,
+                    channels=channel_mapping if channel_mapping else None
+                )
+                
+                logger.info("✅ Provisioned IDs persisted to config.json and reloaded")
+            except Exception as e:
+                logger.error(f"❌ Failed to persist provisioned IDs: {e}", exc_info=True)
+            
+            # Step 5: Generate audit log
+            progress_embed = create_embed(
+                title="✨ Full Server Setup in Progress",
+                description=(
+                    f"**Step 3/5:** ✅ Deployed panels\n"
+                    f"**Step 4/5:** ✅ Logged IDs to config\n"
+                    f"**Step 5/5:** 📊 Generating audit log..."
+                ),
+                color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
+            )
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=progress_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    progress_message = await interaction.followup.send(embed=progress_embed, ephemeral=True)
             
             # Log comprehensive audit
             await self._log_full_server_setup_audit(
@@ -1821,58 +2542,73 @@ class SetupCog(commands.Cog):
             # Success message with detailed summary
             summary_parts = []
             
+            # Use counts instead of full lists to prevent embed field overflow (Discord limit: 1024 chars)
             if created_roles:
-                summary_parts.append(f"**Roles Created:** {', '.join(r.mention for r in created_roles)}")
+                summary_parts.append(f"**Roles Created:** {len(created_roles)} role(s)")
             if reused_roles:
-                summary_parts.append(f"**Roles Reused:** {', '.join(r.mention for r in reused_roles)}")
+                summary_parts.append(f"**Roles Reused:** {len(reused_roles)} role(s)")
             
             if created_categories:
-                summary_parts.append(f"**Categories Created:** {', '.join(c.name for c in created_categories)}")
+                summary_parts.append(f"**Categories Created:** {len(created_categories)} category/categories")
             if reused_categories:
-                summary_parts.append(f"**Categories Reused:** {', '.join(c.name for c in reused_categories)}")
+                summary_parts.append(f"**Categories Reused:** {len(reused_categories)} category/categories")
             
             if created_channels:
-                summary_parts.append(f"**Channels Created:** {', '.join(c.mention for c in created_channels)}")
+                summary_parts.append(f"**Channels Created:** {len(created_channels)} channel(s)")
             if reused_channels:
-                summary_parts.append(f"**Channels Reused:** {', '.join(c.mention for c in reused_channels)}")
+                summary_parts.append(f"**Channels Reused:** {len(reused_channels)} channel(s)")
             
             if deployed_panels:
-                summary_parts.append(f"**Panels Deployed:** {', '.join(deployed_panels)}")
+                panel_list = ', '.join(deployed_panels[:8])  # Show panel names (usually short)
+                if len(deployed_panels) > 8:
+                    panel_list += f" (+{len(deployed_panels) - 8} more)"
+                summary_parts.append(f"**Panels Deployed:** {panel_list}")
             
-            await interaction.edit_original_response(
-                content=f"✅ **Full Server Setup Complete!**\n\n" + "\n\n".join(summary_parts) + 
-                        f"\n\n🎉 Your Apex Core server is ready to use!"
+            completion_embed = create_embed(
+                title="✨ Full Server Setup Complete!",
+                description=(
+                    "**🎉 Congratulations!** Your Apex Core server has been fully configured!\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=discord.Color.from_rgb(0, 255, 255),  # Cyan - Apex Digital branding
             )
             
-            # Persist provisioned IDs to config before cleanup
-            try:
-                # Build mappings of all provisioned/reused resources
-                role_mapping = {}
-                for role in created_roles + reused_roles:
-                    if role.name not in role_mapping:  # Avoid duplicates
-                        role_mapping[role.name] = role.id
+            if summary_parts:
+                # Discord embed field value limit is 1024 characters - ensure we stay under
+                summary_text = "\n".join(summary_parts)
+                # Truncate if needed (with safety margin)
+                if len(summary_text) > 1020:
+                    summary_text = summary_text[:1017] + "..."
                 
-                category_mapping = {}
-                for category in created_categories + reused_categories:
-                    if category.name not in category_mapping:  # Avoid duplicates
-                        category_mapping[category.name] = category.id
-                
-                channel_mapping = {}
-                for channel in created_channels + reused_channels:
-                    if channel.name not in channel_mapping:  # Avoid duplicates
-                        channel_mapping[channel.name] = channel.id
-                
-                # Log all provisioned IDs to config
-                await self._log_provisioned_ids(
-                    roles=role_mapping if role_mapping else None,
-                    categories=category_mapping if category_mapping else None,
-                    channels=channel_mapping if channel_mapping else None
+                completion_embed.add_field(
+                    name="📊 Setup Summary",
+                    value=summary_text,
+                    inline=False
                 )
-                
-                logger.info("Provisioned IDs persisted to config.json")
-            except Exception as e:
-                logger.error(f"Failed to persist provisioned IDs: {e}")
-                # Don't fail the entire operation for config issues
+            
+            completion_embed.add_field(
+                name="✅ What's Next?",
+                value=(
+                    "• All roles, categories, and channels have been created\n"
+                    "• Panels have been deployed to their respective channels\n"
+                    "• Your server is ready to use!\n\n"
+                    "**Tip:** Check the audit log for detailed information."
+                ),
+                inline=False
+            )
+            
+            completion_embed.set_footer(text="✨ Apex Core • Professional Setup Complete")
+            
+            # Edit the progress message we sent
+            if progress_message:
+                try:
+                    await progress_message.edit(embed=completion_embed)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message was deleted or can't be edited, send new one
+                    await interaction.followup.send(embed=completion_embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=completion_embed, ephemeral=True)
+            
             
             # Audit permissions to ensure they were applied correctly
             try:
@@ -1904,11 +2640,46 @@ class SetupCog(commands.Cog):
         self, guild: discord.Guild, role_bp, session: SetupSession
     ) -> tuple[discord.Role, bool]:
         """Provision a role, returning (role, is_new)."""
-        # Check if role already exists
-        existing_role = discord.utils.get(guild.roles, name=role_bp.name)
+        # Check for ALL roles with this name (handle duplicates)
+        existing_roles = [role for role in guild.roles if role.name == role_bp.name]
         
-        if existing_role:
-            logger.info(f"Role '{role_bp.name}' already exists, reusing")
+        if existing_roles:
+            # If multiple roles with same name, delete duplicates and keep the first one
+            if len(existing_roles) > 1:
+                logger.warning(f"Found {len(existing_roles)} duplicate roles named '{role_bp.name}', deleting extras")
+                # Keep the first one, delete the rest
+                for duplicate_role in existing_roles[1:]:
+                    try:
+                        await duplicate_role.delete(reason="Apex Core setup: Removing duplicate role")
+                        logger.info(f"Deleted duplicate role '{duplicate_role.name}' (ID: {duplicate_role.id})")
+                    except discord.Forbidden:
+                        logger.warning(f"Lack permissions to delete duplicate role '{duplicate_role.name}'")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete duplicate role '{duplicate_role.name}': {e}")
+            
+            existing_role = existing_roles[0]
+            logger.info(f"Role '{role_bp.name}' already exists, reusing and updating")
+            # Update role properties to match blueprint (color, permissions, etc.)
+            try:
+                updates = {}
+                if existing_role.color != role_bp.color:
+                    updates['color'] = role_bp.color
+                if existing_role.permissions != role_bp.permissions:
+                    updates['permissions'] = role_bp.permissions
+                if existing_role.hoist != role_bp.hoist:
+                    updates['hoist'] = role_bp.hoist
+                if existing_role.mentionable != role_bp.mentionable:
+                    updates['mentionable'] = role_bp.mentionable
+                if role_bp.position is not None and existing_role.position != role_bp.position:
+                    updates['position'] = role_bp.position
+                
+                if updates:
+                    await existing_role.edit(**updates, reason="Apex Core setup: Update role properties")
+                    logger.info(f"Updated role '{role_bp.name}': {list(updates.keys())}")
+            except discord.Forbidden:
+                logger.warning(f"Lack permissions to update role '{role_bp.name}' properties")
+            except Exception as e:
+                logger.warning(f"Failed to update role '{role_bp.name}': {e}")
             return existing_role, False
         
         # Create new role
@@ -1952,24 +2723,42 @@ class SetupCog(commands.Cog):
         self, guild: discord.Guild, category_bp, role_map: Dict[str, discord.Role],
         session: SetupSession
     ) -> tuple[discord.CategoryChannel, bool]:
-        """Provision a category, returning (category, is_new)."""
-        # Check if category already exists
+        """Provision a category - ALWAYS CREATE FRESH, never reuse."""
+        # DON'T REUSE - DELETE AND CREATE FRESH
+        # This ensures exact names, correct order, and no leftover issues
         existing_category = discord.utils.get(guild.categories, name=category_bp.name)
         
         if existing_category:
-            logger.info(f"Category '{category_bp.name}' already exists, reusing")
-            return existing_category, False
+            logger.info(f"🗑️  Deleting existing category '{existing_category.name}' to recreate fresh")
+            try:
+                # Move channels out first
+                for channel in existing_category.channels:
+                    try:
+                        await channel.edit(category=None, reason="Apex Core setup: Moving channel before category deletion")
+                    except:
+                        pass
+                await existing_category.delete(reason="Apex Core setup: Deleting to recreate fresh")
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"Could not delete existing category '{existing_category.name}': {e}")
+                # Continue anyway - will try to create new
         
         # Build permission overwrites
         overwrites = self._build_overwrites(category_bp.overwrites, role_map, guild)
         
         # Create new category
         try:
-            category = await guild.create_category(
-                name=category_bp.name,
-                overwrites=overwrites,
-                reason=category_bp.reason
-            )
+            create_kwargs = {
+                "name": category_bp.name,
+                "overwrites": overwrites,
+                "reason": category_bp.reason
+            }
+            
+            # Add position if specified
+            if category_bp.position is not None:
+                create_kwargs["position"] = category_bp.position
+            
+            logger.info(f"✨ Creating category '{category_bp.name}' at position {category_bp.position}")
+            category = await guild.create_category(**create_kwargs)
             
             # Add to rollback stack
             rollback = RollbackInfo(
@@ -1981,7 +2770,7 @@ class SetupCog(commands.Cog):
             )
             session.rollback_stack.append(rollback)
             
-            logger.info(f"Created category '{category_bp.name}' (ID: {category.id})")
+            logger.info(f"✅ Created category '{category_bp.name}' (ID: {category.id}) at position {category.position}")
             return category, True
             
         except discord.Forbidden:
@@ -2002,17 +2791,64 @@ class SetupCog(commands.Cog):
         channel_bp, role_map: Dict[str, discord.Role], session: SetupSession
     ) -> tuple[discord.TextChannel, bool]:
         """Provision a channel, returning (channel, is_new)."""
-        # Check if channel already exists in this category
-        existing_channel = discord.utils.get(category.channels, name=channel_bp.name)
+        # Extract base name for matching (remove emoji and normalize)
+        channel_name_parts = channel_bp.name.split('-', 1)
+        if len(channel_name_parts) > 1:
+            channel_name_base = channel_name_parts[1].lower().strip()  # e.g., "products" from "🛍️-products"
+        else:
+            channel_name_base = channel_bp.name.lower().strip()
         
-        if existing_channel and isinstance(existing_channel, discord.TextChannel):
-            logger.info(f"Channel '{channel_bp.name}' already exists in '{category.name}', reusing")
-            return existing_channel, False
+        # Normalize for comparison (remove emojis, special chars, lowercase)
+        def normalize_name(name: str) -> str:
+            # Remove emojis and special chars, keep only alphanumeric and hyphens
+            normalized = ''.join(c for c in name if c.isalnum() or c == '-').lower().strip()
+            # Remove leading/trailing hyphens
+            return normalized.strip('-')
+        
+        target_normalized = normalize_name(channel_bp.name)
+        
+        # First, check for exact name match
+        existing_channel_anywhere = discord.utils.get(guild.text_channels, name=channel_bp.name)
+        
+        if existing_channel_anywhere:
+            # Channel exists with exact name - update it
+            logger.info(f"Found exact match: '{channel_bp.name}'")
+        else:
+            # Check for similar channels (more aggressive matching)
+            for channel in guild.text_channels:
+                if channel.name == channel_bp.name:
+                    existing_channel_anywhere = channel
+                    break
+                
+                # Check normalized names
+                channel_normalized = normalize_name(channel.name)
+                if channel_normalized == target_normalized:
+                    logger.info(f"Found normalized match: '{channel.name}' -> '{channel_bp.name}'")
+                    existing_channel_anywhere = channel
+                    break
+                
+                # Check base name match (after emoji/hyphen)
+                channel_base = channel.name.split('-', 1)[-1].lower().strip() if '-' in channel.name else channel.name.lower().strip()
+                if channel_base == channel_name_base and channel_base:
+                    logger.info(f"Found base name match: '{channel.name}' -> '{channel_bp.name}'")
+                    existing_channel_anywhere = channel
+                    break
+        
+        # DON'T REUSE - DELETE AND CREATE FRESH
+        # This ensures exact names, correct order, and no leftover issues
+        if existing_channel_anywhere:
+            logger.info(f"🗑️  Deleting existing channel '{existing_channel_anywhere.name}' to recreate fresh as '{channel_bp.name}'")
+            try:
+                await existing_channel_anywhere.delete(reason="Apex Core setup: Deleting to recreate fresh with exact name")
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"Could not delete existing channel '{existing_channel_anywhere.name}': {e}")
+                # Continue anyway - will try to create new
         
         # Build permission overwrites
         overwrites = self._build_overwrites(channel_bp.overwrites, role_map, guild)
         
-        # Create new channel
+        # Create new channel (always create fresh, never reuse)
+        logger.info(f"✨ Creating channel '{channel_bp.name}' in category '{category.name}'")
         try:
             if channel_bp.channel_type == "text":
                 channel = await guild.create_text_channel(
@@ -2040,7 +2876,7 @@ class SetupCog(commands.Cog):
             )
             session.rollback_stack.append(rollback)
             
-            logger.info(f"Created channel '{channel_bp.name}' (ID: {channel.id}) in '{category.name}'")
+            logger.info(f"✅ Created channel '{channel_bp.name}' (ID: {channel.id}) in '{category.name}' at position {channel.position}")
             return channel, True
             
         except discord.Forbidden:
@@ -2102,64 +2938,102 @@ class SetupCog(commands.Cog):
                 return
             
             embed = create_embed(
-                title="🏗️ Full Server Setup Completed",
-                description=f"**Administrator:** {admin.mention}\n**Timestamp:** <t:{int(datetime.now(timezone.utc).timestamp())}:F>",
+                title="✨ Full Server Setup Completed Successfully!",
+                description=(
+                    f"**Administrator:** {admin.mention}\n"
+                    f"**Timestamp:** <t:{int(datetime.now(timezone.utc).timestamp())}:F>\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━"
+                ),
                 color=discord.Color.green(),
             )
             
-            # Roles summary
+            # Roles summary (limit to prevent overflow)
             role_summary = []
             if created_roles:
-                role_summary.append(f"**Created ({len(created_roles)}):** {', '.join(r.mention for r in created_roles)}")
+                role_list = [r.mention for r in created_roles[:5]]  # Limit to 5
+                role_text = ', '.join(role_list)
+                if len(created_roles) > 5:
+                    role_text += f" (+{len(created_roles) - 5} more)"
+                role_summary.append(f"**✨ Created ({len(created_roles)}):**\n{role_text}")
             if reused_roles:
-                role_summary.append(f"**Reused ({len(reused_roles)}):** {', '.join(r.mention for r in reused_roles)}")
+                role_list = [r.mention for r in reused_roles[:5]]  # Limit to 5
+                role_text = ', '.join(role_list)
+                if len(reused_roles) > 5:
+                    role_text += f" (+{len(reused_roles) - 5} more)"
+                role_summary.append(f"**♻️ Updated ({len(reused_roles)}):**\n{role_text}")
             
             if role_summary:
+                role_field_value = "\n\n".join(role_summary)
+                if len(role_field_value) > 1020:
+                    role_field_value = role_field_value[:1017] + "..."
                 embed.add_field(
-                    name="🎭 Roles",
-                    value="\n".join(role_summary),
+                    name="🎭 Roles Provisioned",
+                    value=role_field_value,
                     inline=False
                 )
             
-            # Categories summary
+            # Categories summary (limit to prevent overflow)
             cat_summary = []
             if created_categories:
-                cat_summary.append(f"**Created ({len(created_categories)}):** {', '.join(c.name for c in created_categories)}")
+                cat_list = [c.name for c in created_categories[:6]]  # Limit to 6
+                cat_text = ', '.join(cat_list)
+                if len(created_categories) > 6:
+                    cat_text += f" (+{len(created_categories) - 6} more)"
+                cat_summary.append(f"**✨ Created ({len(created_categories)}):**\n{cat_text}")
             if reused_categories:
-                cat_summary.append(f"**Reused ({len(reused_categories)}):** {', '.join(c.name for c in reused_categories)}")
+                cat_list = [c.name for c in reused_categories[:6]]  # Limit to 6
+                cat_text = ', '.join(cat_list)
+                if len(reused_categories) > 6:
+                    cat_text += f" (+{len(reused_categories) - 6} more)"
+                cat_summary.append(f"**♻️ Updated ({len(reused_categories)}):**\n{cat_text}")
             
             if cat_summary:
+                cat_field_value = "\n\n".join(cat_summary)
+                if len(cat_field_value) > 1020:
+                    cat_field_value = cat_field_value[:1017] + "..."
                 embed.add_field(
-                    name="📁 Categories",
-                    value="\n".join(cat_summary),
+                    name="📁 Categories Provisioned",
+                    value=cat_field_value,
                     inline=False
                 )
             
-            # Channels summary
+            # Channels summary (limit to prevent overflow)
             chan_summary = []
             if created_channels:
-                chan_summary.append(f"**Created ({len(created_channels)}):** {', '.join(c.mention for c in created_channels[:10])}")
-                if len(created_channels) > 10:
-                    chan_summary.append(f"... and {len(created_channels) - 10} more")
+                chan_list = [c.mention for c in created_channels[:5]]  # Limit to 5
+                chan_text = ', '.join(chan_list)
+                if len(created_channels) > 5:
+                    chan_text += f" (+{len(created_channels) - 5} more)"
+                chan_summary.append(f"**✨ Created ({len(created_channels)}):**\n{chan_text}")
             if reused_channels:
-                chan_summary.append(f"**Reused ({len(reused_channels)}):** {len(reused_channels)} channels")
+                chan_summary.append(f"**♻️ Updated/Renamed ({len(reused_channels)}):**\n{len(reused_channels)} channels updated to match blueprint")
             
             if chan_summary:
+                chan_field_value = "\n\n".join(chan_summary)
+                if len(chan_field_value) > 1020:
+                    chan_field_value = chan_field_value[:1017] + "..."
                 embed.add_field(
-                    name="💬 Channels",
-                    value="\n".join(chan_summary),
+                    name="💬 Channels Provisioned",
+                    value=chan_field_value,
                     inline=False
                 )
             
             # Panels summary
             if deployed_panels:
+                panel_emojis = {
+                    "products": "🛍️",
+                    "support": "🛟",
+                    "help": "❓",
+                    "reviews": "⭐"
+                }
+                panel_list = "\n".join(f"• {panel_emojis.get(p, '📌')} {p.title()}" for p in deployed_panels)
                 embed.add_field(
                     name="📋 Panels Deployed",
-                    value="\n".join(f"• {panel}" for panel in deployed_panels),
+                    value=panel_list,
                     inline=False
                 )
             
-            embed.set_footer(text="Apex Core • Full Server Setup")
+            embed.set_footer(text="✨ Apex Core • Professional Server Setup")
             await audit_channel.send(embed=embed)
             
         except Exception as e:
@@ -2817,9 +3691,14 @@ class SetupCog(commands.Cog):
         deployed_types = {d["type"] for d in deployments}
 
         embed = create_embed(
-            title="🔧 Apex Core Setup Wizard",
-            description="Current Deployments & Options",
-            color=discord.Color.blurple(),
+            title="✨ Apex Core Setup Wizard",
+            description=(
+                "Welcome to the **Apex Core Setup Wizard**! 🎉\n\n"
+                "This wizard will help you configure your server with professional panels, "
+                "roles, categories, and channels.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
         )
 
         deployment_info = ""
@@ -2828,26 +3707,30 @@ class SetupCog(commands.Cog):
             if panel_type in deployed_types:
                 panel = next((d for d in deployments if d["type"] == panel_type), None)
                 if panel:
-                    deployment_info += f"{emoji} ✅ {panel_type.title()} - <#{panel['channel_id']}> (Message ID: {panel['message_id']})\n"
+                    deployment_info += f"{emoji} **{panel_type.title()}** - ✅ Deployed in <#{panel['channel_id']}>\n"
             else:
-                deployment_info += f"{emoji} ❌ {panel_type.title()} - Not deployed\n"
+                deployment_info += f"{emoji} **{panel_type.title()}** - ❌ Not deployed\n"
 
         embed.add_field(
-            name="Current Status",
+            name="📊 Current Deployment Status",
             value=deployment_info if deployment_info else "No panels deployed yet.",
             inline=False,
         )
 
         embed.add_field(
-            name="What would you like to do?",
-            value="1️⃣ Product Catalog Panel (storefront)\n"
-                  "2️⃣ Support & Refund Buttons\n"
-                  "3️⃣ Help Guide\n"
-                  "4️⃣ Review System Guide\n"
-                  "5️⃣ All of the above",
+            name="🎯 What would you like to do?",
+            value=(
+                "**1️⃣** Product Catalog Panel (storefront)\n"
+                "**2️⃣** Support & Refund Buttons\n"
+                "**3️⃣** Help Guide\n"
+                "**4️⃣** Review System Guide\n"
+                "**5️⃣** All of the above\n"
+                "**🏗️** Full Server Setup (roles + channels + panels)\n"
+                "**🔍** Dry-run: Preview changes"
+            ),
             inline=False,
         )
-        embed.set_footer(text="Select from dropdown to continue")
+        embed.set_footer(text="✨ Select from dropdown to continue • Apex Core Setup")
 
         view = SetupMenuView(
             command_context=ctx,
@@ -2856,10 +3739,10 @@ class SetupCog(commands.Cog):
         )
         await ctx.send(embed=embed, view=view)
 
-    @app_commands.command(name="setup", description="Interactive setup wizard for Apex Core panels")
+    @app_commands.command(name="setup", description="Fully automatic server setup - deletes and recreates all roles, categories, channels, and panels")
     @app_commands.guild_only()
     async def setup_slash(self, interaction: discord.Interaction) -> None:
-        """Slash command entry point for setup wizard."""
+        """Slash command entry point - FULLY AUTOMATIC setup."""
         if interaction.guild is None:
             await interaction.response.send_message(
                 "This command can only be used in a server.", ephemeral=True
@@ -2873,77 +3756,8 @@ class SetupCog(commands.Cog):
             )
             return
         
-        # Defer response for database queries
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        try:
-            # Pre-validate permissions early
-            eligible_channels = await self._precompute_eligible_channels(interaction.guild)
-            
-            # Get current deployments
-            deployments = await self.bot.db.get_deployments(interaction.guild.id)
-            panel_types = ["products", "support", "help", "reviews"]
-            deployed_types = {d["type"] for d in deployments}
-            
-            # Build status embed
-            embed = create_embed(
-                title="🔧 Apex Core Setup Wizard",
-                description="Current Deployments & Options",
-                color=discord.Color.blurple(),
-            )
-            
-            deployment_info = ""
-            for panel_type in panel_types:
-                emoji = self._get_panel_emoji(panel_type)
-                if panel_type in deployed_types:
-                    panel = next((d for d in deployments if d["type"] == panel_type), None)
-                    if panel:
-                        deployment_info += f"{emoji} ✅ {panel_type.title()} - <#{panel['channel_id']}>\n"
-                else:
-                    deployment_info += f"{emoji} ❌ {panel_type.title()} - Not deployed\n"
-            
-            embed.add_field(
-                name="Current Status",
-                value=deployment_info if deployment_info else "No panels deployed yet.",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="✅ Eligible Channels",
-                value=f"Found **{len(eligible_channels)}** channels with required permissions",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="What would you like to do?",
-                value="1️⃣ Product Catalog Panel (storefront)\n"
-                      "2️⃣ Support & Refund Buttons\n"
-                      "3️⃣ Help Guide\n"
-                      "4️⃣ Review System Guide\n"
-                      "5️⃣ All of the above",
-                inline=False,
-            )
-            embed.set_footer(text="Select from dropdown to continue • Modern UI with channel selector")
-            
-            view = SetupMenuView(
-                original_interaction=interaction,
-                user_id=interaction.user.id
-            )
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            
-        except SetupOperationError as e:
-            error_msg = e.format_for_user(is_slash=True)
-            await interaction.followup.send(
-                f"❌ **Setup Failed**\n\n{error_msg}",
-                ephemeral=True
-            )
-        except Exception as e:
-            logger.error(f"Setup command failed for user {interaction.user.id}: {e}")
-            await interaction.followup.send(
-                "❌ An unexpected error occurred while loading setup wizard.\n\n"
-                "💡 **Suggestion:** Try again or contact an administrator.",
-                ephemeral=True
-            )
+        # IMMEDIATELY start full server setup - NO MENU, NO SELECTION
+        await self._start_full_server_setup(interaction)
 
     @commands.command(name="setup-cleanup")
     async def setup_cleanup(self, ctx: commands.Context) -> None:
@@ -2960,7 +3774,7 @@ class SetupCog(commands.Cog):
         embed = create_embed(
             title="🧹 Setup Cleanup Options",
             description="Select what to clean up:",
-            color=discord.Color.blue(),
+            color=discord.Color.from_rgb(0, 191, 255),  # Electric blue - Apex Digital branding
         )
 
         # Count active states

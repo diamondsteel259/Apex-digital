@@ -24,7 +24,7 @@ class Database:
         self.db_path = Path(db_path)
         self._connection: Optional[aiosqlite.Connection] = None
         self._wallet_lock = asyncio.Lock()
-        self.target_schema_version = 19
+        self.target_schema_version = 24
         
         if connect_timeout is None:
             connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "5.0"))
@@ -156,6 +156,11 @@ class Database:
             17: ("announcements_table", self._migration_v17),
             18: ("orders_status_tracking", self._migration_v18),
             19: ("reviews_system", self._migration_v19),
+            20: ("supplier_tracking", self._migration_v20),
+            21: ("ai_support_system", self._migration_v21),
+            22: ("wishlist_and_tags", self._migration_v22),
+            23: ("atto_integration", self._migration_v23),
+            24: ("crypto_wallets", self._migration_v24),
         }
 
         for version in sorted(migrations.keys()):
@@ -830,24 +835,57 @@ class Database:
         additional_info: Optional[str] = None,
         role_id: Optional[int] = None,
         content_payload: Optional[str] = None,
+        supplier_id: Optional[str] = None,
+        supplier_name: Optional[str] = None,
+        supplier_service_id: Optional[str] = None,
+        supplier_price_cents: Optional[int] = None,
+        markup_percent: Optional[float] = None,
+        supplier_api_url: Optional[str] = None,
+        supplier_order_url: Optional[str] = None,
     ) -> int:
         if self._connection is None:
             raise RuntimeError("Database connection not initialized.")
 
-        cursor = await self._connection.execute(
-            """
-            INSERT INTO products (
-                main_category, sub_category, service_name, variant_name, 
-                price_cents, start_time, duration, refill_period, additional_info,
-                role_id, content_payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                main_category, sub_category, service_name, variant_name,
-                price_cents, start_time, duration, refill_period, additional_info,
-                role_id, content_payload
-            ),
-        )
+        # Check if supplier fields exist (migration v20)
+        cursor = await self._connection.execute("PRAGMA table_info(products)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        has_supplier_fields = "supplier_id" in columns
+
+        if has_supplier_fields:
+            cursor = await self._connection.execute(
+                """
+                INSERT INTO products (
+                    main_category, sub_category, service_name, variant_name, 
+                    price_cents, start_time, duration, refill_period, additional_info,
+                    role_id, content_payload,
+                    supplier_id, supplier_name, supplier_service_id, supplier_price_cents,
+                    markup_percent, supplier_api_url, supplier_order_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    main_category, sub_category, service_name, variant_name,
+                    price_cents, start_time, duration, refill_period, additional_info,
+                    role_id, content_payload,
+                    supplier_id, supplier_name, supplier_service_id, supplier_price_cents,
+                    markup_percent, supplier_api_url, supplier_order_url
+                ),
+            )
+        else:
+            # Fallback for older schema
+            cursor = await self._connection.execute(
+                """
+                INSERT INTO products (
+                    main_category, sub_category, service_name, variant_name, 
+                    price_cents, start_time, duration, refill_period, additional_info,
+                    role_id, content_payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    main_category, sub_category, service_name, variant_name,
+                    price_cents, start_time, duration, refill_period, additional_info,
+                    role_id, content_payload
+                ),
+            )
         await self._connection.commit()
         return cursor.lastrowid
 
@@ -3788,6 +3826,334 @@ class Database:
         await self._connection.commit()
         logger.info("Created reviews system table")
 
+    async def _migration_v20(self) -> None:
+        """Migration v20: Add supplier tracking to products and create suppliers table."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            -- Add supplier tracking fields to products table
+            ALTER TABLE products ADD COLUMN supplier_id TEXT;
+            ALTER TABLE products ADD COLUMN supplier_name TEXT;
+            ALTER TABLE products ADD COLUMN supplier_service_id TEXT;
+            ALTER TABLE products ADD COLUMN supplier_price_cents INTEGER;
+            ALTER TABLE products ADD COLUMN markup_percent REAL DEFAULT 0;
+            ALTER TABLE products ADD COLUMN supplier_api_url TEXT;
+            ALTER TABLE products ADD COLUMN supplier_order_url TEXT;
+            
+            -- Create suppliers table for managing API suppliers
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                api_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                supplier_type TEXT NOT NULL,
+                markup_percent REAL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_products_supplier ON products(supplier_id);
+            CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Added supplier tracking to products table and created suppliers table")
+
+    async def _migration_v21(self) -> None:
+        """Migration v21: Add AI support system tables."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            -- AI usage logs table
+            CREATE TABLE IF NOT EXISTS ai_usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                tier TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                estimated_cost_cents INTEGER,
+                question_preview TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            -- AI subscriptions table
+            CREATE TABLE IF NOT EXISTS ai_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL UNIQUE,
+                tier TEXT NOT NULL,
+                subscription_start TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                subscription_end TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            -- Daily question usage tracking
+            CREATE TABLE IF NOT EXISTS ai_daily_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                usage_date DATE NOT NULL,
+                general_questions INTEGER NOT NULL DEFAULT 0,
+                product_questions INTEGER NOT NULL DEFAULT 0,
+                images_generated INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_discord_id, usage_date),
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_user ON ai_usage_logs(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_date ON ai_usage_logs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_ai_subscriptions_user ON ai_subscriptions(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_subscriptions_active ON ai_subscriptions(is_active);
+            CREATE INDEX IF NOT EXISTS idx_ai_daily_usage_user_date ON ai_daily_usage(user_discord_id, usage_date);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created AI support system tables")
+
+    async def _migration_v22(self) -> None:
+        """Migration v22: Add wishlist, product tags, and PIN security."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            -- Wishlist table
+            CREATE TABLE IF NOT EXISTS wishlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_discord_id, product_id),
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE,
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+            );
+            
+            -- Product tags table
+            CREATE TABLE IF NOT EXISTS product_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(product_id, tag),
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+            );
+            """
+        )
+        # Add PIN columns safely (SQLite doesn't support IF NOT EXISTS for ALTER TABLE)
+        try:
+            cursor = await self._connection.execute("PRAGMA table_info(users)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            
+            if "pin_hash" not in columns:
+                await self._connection.execute("ALTER TABLE users ADD COLUMN pin_hash TEXT")
+            if "pin_attempts" not in columns:
+                await self._connection.execute("ALTER TABLE users ADD COLUMN pin_attempts INTEGER DEFAULT 0")
+            if "pin_locked_until" not in columns:
+                await self._connection.execute("ALTER TABLE users ADD COLUMN pin_locked_until TIMESTAMP")
+        except Exception as e:
+            logger.warning(f"Could not add PIN columns (may already exist): {e}")
+        
+        await self._connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_wishlist_product ON wishlist(product_id);
+            CREATE INDEX IF NOT EXISTS idx_product_tags_product ON product_tags(product_id);
+            CREATE INDEX IF NOT EXISTS idx_product_tags_tag ON product_tags(tag);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created wishlist, product tags, and PIN security tables")
+
+    async def _migration_v23(self) -> None:
+        """Migration v23: Add Atto cryptocurrency integration (main wallet system)."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            -- Atto user balances (tracked in database, not individual wallets)
+            CREATE TABLE IF NOT EXISTS atto_user_balances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL UNIQUE,
+                balance_raw TEXT NOT NULL DEFAULT '0',
+                total_deposited_raw TEXT NOT NULL DEFAULT '0',
+                total_withdrawn_raw TEXT NOT NULL DEFAULT '0',
+                deposit_memo TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            -- Atto transactions
+            CREATE TABLE IF NOT EXISTS atto_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                transaction_type TEXT NOT NULL,
+                amount_raw TEXT NOT NULL,
+                amount_usd_cents INTEGER,
+                cashback_raw TEXT DEFAULT '0',
+                from_address TEXT,
+                to_address TEXT,
+                transaction_hash TEXT,
+                memo TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            -- Atto swap history (wallet balance to Atto)
+            CREATE TABLE IF NOT EXISTS atto_swaps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_discord_id INTEGER NOT NULL,
+                from_currency TEXT NOT NULL,
+                to_currency TEXT NOT NULL,
+                from_amount_cents INTEGER NOT NULL,
+                to_amount_raw TEXT NOT NULL,
+                exchange_rate REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_discord_id) REFERENCES users(discord_id) ON DELETE CASCADE
+            );
+            
+            -- Main wallet config (stored in database)
+            CREATE TABLE IF NOT EXISTS atto_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_atto_balances_user ON atto_user_balances(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_atto_transactions_user ON atto_transactions(user_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_atto_transactions_hash ON atto_transactions(transaction_hash);
+            CREATE INDEX IF NOT EXISTS idx_atto_transactions_memo ON atto_transactions(memo);
+            CREATE INDEX IF NOT EXISTS idx_atto_swaps_user ON atto_swaps(user_discord_id);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created Atto integration tables (main wallet system)")
+
+    async def _migration_v24(self) -> None:
+        """Migration v24: Add crypto wallet and transaction verification system."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        await self._connection.executescript(
+            """
+            -- Crypto addresses per order (unique addresses for tracking)
+            CREATE TABLE IF NOT EXISTS crypto_order_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                address TEXT NOT NULL,
+                amount_cents INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE,
+                UNIQUE(order_id, network)
+            );
+            
+            -- Crypto transaction verifications
+            CREATE TABLE IF NOT EXISTS crypto_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                transaction_hash TEXT NOT NULL,
+                address TEXT NOT NULL,
+                amount_cents INTEGER,
+                amount_crypto TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmations INTEGER DEFAULT 0,
+                verified_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_crypto_addresses_order ON crypto_order_addresses(order_id);
+            CREATE INDEX IF NOT EXISTS idx_crypto_addresses_network ON crypto_order_addresses(network);
+            CREATE INDEX IF NOT EXISTS idx_crypto_tx_order ON crypto_transactions(order_id);
+            CREATE INDEX IF NOT EXISTS idx_crypto_tx_hash ON crypto_transactions(transaction_hash);
+            CREATE INDEX IF NOT EXISTS idx_crypto_tx_status ON crypto_transactions(status);
+            """
+        )
+        await self._connection.commit()
+        logger.info("Created crypto wallet and transaction verification tables")
+
+    # ==================== SUPPLIER METHODS ====================
+    
+    async def get_product_by_supplier_service(
+        self, supplier_id: str, supplier_service_id: str
+    ) -> Optional[aiosqlite.Row]:
+        """Get product by supplier ID and service ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        # Check if supplier fields exist
+        cursor = await self._connection.execute("PRAGMA table_info(products)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "supplier_id" not in columns:
+            return None
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM products 
+            WHERE supplier_id = ? AND supplier_service_id = ?
+            LIMIT 1
+            """,
+            (supplier_id, supplier_service_id)
+        )
+        return await cursor.fetchone()
+    
+    async def create_supplier(
+        self,
+        name: str,
+        api_url: str,
+        api_key: str,
+        supplier_type: str,
+        markup_percent: float = 0.0,
+    ) -> int:
+        """Create a new supplier record."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO suppliers (name, api_url, api_key, supplier_type, markup_percent)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (name, api_url, api_key, supplier_type, markup_percent)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+    
+    async def get_supplier(self, supplier_id: int) -> Optional[aiosqlite.Row]:
+        """Get supplier by ID."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM suppliers WHERE id = ?",
+            (supplier_id,)
+        )
+        return await cursor.fetchone()
+    
+    async def get_all_suppliers(self) -> list[aiosqlite.Row]:
+        """Get all active suppliers."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM suppliers WHERE is_active = 1 ORDER BY name ASC"
+        )
+        return await cursor.fetchall()
+
     # ==================== REVIEW SYSTEM METHODS ====================
     
     async def create_review(
@@ -4082,3 +4448,523 @@ class Database:
             )
             await self._connection.commit()
             logger.info("Added status tracking columns to orders table")
+
+    # ==================== AI SUPPORT METHODS ====================
+    
+    async def get_ai_subscription(self, user_discord_id: int) -> Optional[aiosqlite.Row]:
+        """Get user's AI subscription."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM ai_subscriptions WHERE user_discord_id = ? AND is_active = 1",
+            (user_discord_id,)
+        )
+        return await cursor.fetchone()
+    
+    async def create_ai_subscription(
+        self,
+        user_discord_id: int,
+        tier: str,
+        subscription_end: Optional[datetime] = None
+    ) -> int:
+        """Create or update AI subscription."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        # Check if subscription exists
+        existing = await self.get_ai_subscription(user_discord_id)
+        
+        if existing:
+            # Update existing
+            await self._connection.execute(
+                """
+                UPDATE ai_subscriptions
+                SET tier = ?, subscription_end = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_discord_id = ?
+                """,
+                (tier, subscription_end.isoformat() if subscription_end else None, user_discord_id)
+            )
+        else:
+            # Create new
+            cursor = await self._connection.execute(
+                """
+                INSERT INTO ai_subscriptions (user_discord_id, tier, subscription_end)
+                VALUES (?, ?, ?)
+                """,
+                (user_discord_id, tier, subscription_end.isoformat() if subscription_end else None)
+            )
+            await self._connection.commit()
+            return cursor.lastrowid
+        
+        await self._connection.commit()
+        return existing["id"] if existing else 0
+    
+    async def get_ai_usage_stats(self, user_discord_id: int, days: int = 30) -> dict:
+        """Get AI usage statistics for a user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT 
+                COUNT(*) as total_questions,
+                SUM(total_tokens) as total_tokens,
+                SUM(estimated_cost_cents) as total_cost_cents,
+                tier
+            FROM ai_usage_logs
+            WHERE user_discord_id = ? AND created_at >= datetime('now', '-' || ? || ' days')
+            GROUP BY tier
+            """,
+            (user_discord_id, days)
+        )
+        return await cursor.fetchall()
+    
+    # ==================== WISHLIST METHODS ====================
+    
+    async def add_to_wishlist(self, user_discord_id: int, product_id: int) -> bool:
+        """Add product to user's wishlist."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                "INSERT OR IGNORE INTO wishlist (user_discord_id, product_id) VALUES (?, ?)",
+                (user_discord_id, product_id)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding to wishlist: {e}")
+            return False
+    
+    async def remove_from_wishlist(self, user_discord_id: int, product_id: int) -> bool:
+        """Remove product from user's wishlist."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                "DELETE FROM wishlist WHERE user_discord_id = ? AND product_id = ?",
+                (user_discord_id, product_id)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error removing from wishlist: {e}")
+            return False
+    
+    async def get_wishlist(self, user_discord_id: int) -> list[aiosqlite.Row]:
+        """Get user's wishlist."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT w.*, p.*
+            FROM wishlist w
+            JOIN products p ON w.product_id = p.id
+            WHERE w.user_discord_id = ?
+            ORDER BY w.created_at DESC
+            """,
+            (user_discord_id,)
+        )
+        return await cursor.fetchall()
+    
+    async def is_in_wishlist(self, user_discord_id: int, product_id: int) -> bool:
+        """Check if product is in user's wishlist."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM wishlist WHERE user_discord_id = ? AND product_id = ? LIMIT 1",
+            (user_discord_id, product_id)
+        )
+        return await cursor.fetchone() is not None
+    
+    # ==================== PRODUCT TAGS METHODS ====================
+    
+    async def add_product_tag(self, product_id: int, tag: str) -> bool:
+        """Add tag to product."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                "INSERT OR IGNORE INTO product_tags (product_id, tag) VALUES (?, ?)",
+                (product_id, tag.lower())
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding product tag: {e}")
+            return False
+    
+    async def remove_product_tag(self, product_id: int, tag: str) -> bool:
+        """Remove tag from product."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                "DELETE FROM product_tags WHERE product_id = ? AND tag = ?",
+                (product_id, tag.lower())
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error removing product tag: {e}")
+            return False
+    
+    async def get_product_tags(self, product_id: int) -> list[str]:
+        """Get all tags for a product."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT tag FROM product_tags WHERE product_id = ?",
+            (product_id,)
+        )
+        rows = await cursor.fetchall()
+        return [row["tag"] for row in rows]
+    
+    async def search_products_by_tag(self, tag: str) -> list[aiosqlite.Row]:
+        """Search products by tag."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            SELECT DISTINCT p.*
+            FROM products p
+            JOIN product_tags pt ON p.id = pt.product_id
+            WHERE pt.tag = ? AND p.is_active = 1
+            """,
+            (tag.lower(),)
+        )
+        return await cursor.fetchall()
+    
+    # ==================== PIN SECURITY METHODS ====================
+    
+    async def set_user_pin(self, user_discord_id: int, pin_hash: str) -> bool:
+        """Set user PIN."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            # Check if PIN columns exist
+            cursor = await self._connection.execute("PRAGMA table_info(users)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            
+            if "pin_hash" not in columns:
+                logger.warning("PIN columns not found in users table")
+                return False
+            
+            await self._connection.execute(
+                "UPDATE users SET pin_hash = ?, pin_attempts = 0, pin_locked_until = NULL WHERE discord_id = ?",
+                (pin_hash, user_discord_id)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting user PIN: {e}")
+            return False
+    
+    async def verify_user_pin(self, user_discord_id: int, pin_hash: str) -> bool:
+        """Verify user PIN."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            cursor = await self._connection.execute(
+                "SELECT pin_hash, pin_attempts, pin_locked_until FROM users WHERE discord_id = ?",
+                (user_discord_id,)
+            )
+            user = await cursor.fetchone()
+            
+            if not user or not user["pin_hash"]:
+                return False
+            
+            # Check if locked
+            if user["pin_locked_until"]:
+                locked_until = datetime.fromisoformat(user["pin_locked_until"])
+                if datetime.now(timezone.utc) < locked_until:
+                    return False
+            
+            # Verify PIN
+            if user["pin_hash"] == pin_hash:
+                # Reset attempts on success
+                await self._connection.execute(
+                    "UPDATE users SET pin_attempts = 0 WHERE discord_id = ?",
+                    (user_discord_id,)
+                )
+                await self._connection.commit()
+                return True
+            else:
+                # Increment attempts
+                attempts = (user["pin_attempts"] or 0) + 1
+                locked_until = None
+                
+                if attempts >= 5:
+                    # Lock for 1 hour
+                    locked_until = datetime.now(timezone.utc) + timedelta(hours=1)
+                
+                await self._connection.execute(
+                    "UPDATE users SET pin_attempts = ?, pin_locked_until = ? WHERE discord_id = ?",
+                    (attempts, locked_until.isoformat() if locked_until else None, user_discord_id)
+                )
+                await self._connection.commit()
+                return False
+        except Exception as e:
+            logger.error(f"Error verifying user PIN: {e}")
+            return False
+    
+    # ==================== ATTO INTEGRATION METHODS ====================
+    
+    async def get_atto_balance(self, user_discord_id: int) -> Optional[aiosqlite.Row]:
+        """Get user's tracked Atto balance."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM atto_user_balances WHERE user_discord_id = ?",
+            (user_discord_id,)
+        )
+        return await cursor.fetchone()
+    
+    async def create_atto_balance(self, user_discord_id: int, deposit_memo: str) -> int:
+        """Create Atto balance record for user."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "INSERT INTO atto_user_balances (user_discord_id, deposit_memo) VALUES (?, ?)",
+            (user_discord_id, deposit_memo)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+    
+    async def add_atto_balance(self, user_discord_id: int, amount_raw: str, cashback_raw: str = "0") -> bool:
+        """Add Atto balance to user (for deposits)."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            # Get or create balance record
+            balance = await self.get_atto_balance(user_discord_id)
+            if not balance:
+                # Create with memo
+                memo = f"USER_{user_discord_id}"
+                await self.create_atto_balance(user_discord_id, memo)
+            
+            # Add deposit + cashback
+            total_added = str(int(amount_raw) + int(cashback_raw))
+            await self._connection.execute(
+                """
+                UPDATE atto_user_balances 
+                SET balance_raw = CAST(balance_raw AS INTEGER) + CAST(? AS INTEGER),
+                    total_deposited_raw = CAST(total_deposited_raw AS INTEGER) + CAST(? AS INTEGER),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_discord_id = ?
+                """,
+                (total_added, amount_raw, user_discord_id)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding Atto balance: {e}")
+            return False
+    
+    async def deduct_atto_balance(self, user_discord_id: int, amount_raw: str) -> bool:
+        """Deduct Atto balance from user (for payments/withdrawals)."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                """
+                UPDATE atto_user_balances 
+                SET balance_raw = CAST(balance_raw AS INTEGER) - CAST(? AS INTEGER),
+                    total_withdrawn_raw = CAST(total_withdrawn_raw AS INTEGER) + CAST(? AS INTEGER),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_discord_id = ? AND CAST(balance_raw AS INTEGER) >= CAST(? AS INTEGER)
+                """,
+                (amount_raw, amount_raw, user_discord_id, amount_raw)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error deducting Atto balance: {e}")
+            return False
+    
+    async def get_main_wallet_address(self) -> Optional[str]:
+        """Get main wallet address from config."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT value FROM atto_config WHERE key = 'main_wallet_address'"
+        )
+        row = await cursor.fetchone()
+        return row["value"] if row else None
+    
+    async def set_main_wallet_address(self, address: str) -> bool:
+        """Set main wallet address in config."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                """
+                INSERT INTO atto_config (key, value, updated_at)
+                VALUES ('main_wallet_address', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+                """,
+                (address, address)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting main wallet address: {e}")
+            return False
+    
+    # ==================== CRYPTO WALLET METHODS ====================
+    
+    async def create_crypto_order_address(
+        self, order_id: int, network: str, address: str, amount_cents: int
+    ) -> int:
+        """Create crypto address for order."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO crypto_order_addresses (order_id, network, address, amount_cents)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(order_id, network) DO UPDATE SET address = ?, amount_cents = ?
+            """,
+            (order_id, network, address, amount_cents, address, amount_cents)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+    
+    async def get_crypto_order_address(self, order_id: int, network: str) -> Optional[aiosqlite.Row]:
+        """Get crypto address for order."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM crypto_order_addresses WHERE order_id = ? AND network = ?",
+            (order_id, network)
+        )
+        return await cursor.fetchone()
+    
+    async def create_crypto_transaction(
+        self,
+        order_id: int,
+        network: str,
+        transaction_hash: str,
+        address: str,
+        amount_cents: Optional[int] = None,
+        amount_crypto: Optional[str] = None,
+        status: str = "pending"
+    ) -> int:
+        """Create crypto transaction record."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO crypto_transactions 
+            (order_id, network, transaction_hash, address, amount_cents, amount_crypto, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (order_id, network, transaction_hash, address, amount_cents, amount_crypto, status)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+    
+    async def get_crypto_transaction(self, transaction_hash: str) -> Optional[aiosqlite.Row]:
+        """Get crypto transaction by hash."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            "SELECT * FROM crypto_transactions WHERE transaction_hash = ?",
+            (transaction_hash,)
+        )
+        return await cursor.fetchone()
+    
+    async def update_crypto_transaction_status(
+        self, transaction_hash: str, status: str, confirmations: int = 0
+    ) -> bool:
+        """Update crypto transaction status."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        try:
+            await self._connection.execute(
+                """
+                UPDATE crypto_transactions 
+                SET status = ?, confirmations = ?, verified_at = CURRENT_TIMESTAMP
+                WHERE transaction_hash = ?
+                """,
+                (status, confirmations, transaction_hash)
+            )
+            await self._connection.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating crypto transaction status: {e}")
+            return False
+    
+    async def log_atto_transaction(
+        self,
+        user_discord_id: int,
+        transaction_type: str,
+        amount_raw: str,
+        amount_usd_cents: int,
+        from_address: Optional[str] = None,
+        to_address: Optional[str] = None,
+        transaction_hash: Optional[str] = None,
+        memo: Optional[str] = None,
+        cashback_raw: Optional[str] = None,
+        status: str = "pending"
+    ) -> int:
+        """Log Atto transaction."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO atto_transactions 
+            (user_discord_id, transaction_type, amount_raw, amount_usd_cents, cashback_raw, from_address, to_address, transaction_hash, memo, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_discord_id, transaction_type, amount_raw, amount_usd_cents, cashback_raw or "0", from_address, to_address, transaction_hash, memo, status)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
+    
+    async def log_atto_swap(
+        self,
+        user_discord_id: int,
+        from_currency: str,
+        to_currency: str,
+        from_amount_cents: int,
+        to_amount_raw: str,
+        exchange_rate: float
+    ) -> int:
+        """Log Atto swap transaction."""
+        if self._connection is None:
+            raise RuntimeError("Database connection not initialized.")
+        
+        cursor = await self._connection.execute(
+            """
+            INSERT INTO atto_swaps 
+            (user_discord_id, from_currency, to_currency, from_amount_cents, to_amount_raw, exchange_rate)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_discord_id, from_currency, to_currency, from_amount_cents, to_amount_raw, exchange_rate)
+        )
+        await self._connection.commit()
+        return cursor.lastrowid
