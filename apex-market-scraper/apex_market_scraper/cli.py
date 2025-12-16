@@ -9,7 +9,7 @@ from typing import Any
 
 from apex_market_scraper.config.loader import RuntimeSettings, load_app_config
 from apex_market_scraper.core.logging import setup_logging
-from apex_market_scraper.core.pipeline import scrape_all_sites
+from apex_market_scraper.core.pipeline import run_scrape, scrape_all_sites
 from apex_market_scraper.export.writers import export_records
 from apex_market_scraper.scheduler.runner import run_scheduler
 
@@ -35,10 +35,19 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     scrape_p = subparsers.add_parser("scrape", help="Scrape configured site(s) and print summary")
-    scrape_p.add_argument("--site", help="Scrape only a single site by name", default=None)
+    scrape_p.add_argument(
+        "--sites",
+        help="Comma-separated site names, or 'all' (default)",
+        default="all",
+    )
+    scrape_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Execute wiring/normalization without issuing network requests",
+    )
     scrape_p.add_argument(
         "--raw-json",
-        help="Optional path to write raw scraped JSON records",
+        help="Optional path to write normalized JSON records",
         default=None,
     )
 
@@ -90,20 +99,26 @@ def main(argv: list[str] | None = None) -> None:
     settings = RuntimeSettings(log_level=args.log_level)
     setup_logging(settings.log_level)
 
-    config_path = Path(args.config) if args.config else (settings.config_path or Path("configs/example.yaml"))
+    config_path = Path(args.config) if args.config else (settings.config_path or Path("configs/example.json"))
     cfg = load_app_config(config_path, settings=settings)
 
     if args.command == "scrape":
-        if args.site:
-            cfg.sites = [s for s in cfg.sites if s.name == args.site]
-        records = scrape_all_sites(cfg, settings)
-        logger.info("Total scraped records: %s", len(records))
+        result = run_scrape(cfg, settings, sites=str(args.sites), dry_run=bool(args.dry_run))
+        records = [r.to_dict() for r in result.records]
+
+        logger.info(
+            "Scrape complete: sites_attempted=%s sites_succeeded=%s records_total=%s records_deduped=%s",
+            result.metrics.sites_attempted,
+            result.metrics.sites_succeeded,
+            result.metrics.records_total,
+            result.metrics.records_deduped,
+        )
 
         if args.raw_json:
             out_path = Path(args.raw_json)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
-            logger.info("Wrote raw JSON: %s", out_path)
+            logger.info("Wrote normalized JSON: %s", out_path)
         return
 
     if args.command == "export":
