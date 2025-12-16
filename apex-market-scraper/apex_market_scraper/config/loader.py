@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,6 +42,11 @@ def _load_raw_config(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
 
     if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore[import-not-found]
+        except ModuleNotFoundError as e:  # pragma: no cover
+            raise RuntimeError("PyYAML is required to load .yaml/.yml configs") from e
+
         return yaml.safe_load(text) or {}
     if suffix == ".json":
         return json.loads(text)
@@ -76,7 +80,7 @@ def resolve_config_path(cli_path: str | None) -> Path:
     if settings.config_path is not None:
         return settings.config_path
 
-    return Path("configs/example.yaml")
+    return Path("configs/example.json")
 
 
 def get_site_api_key(env_var_name: str | None) -> str | None:
