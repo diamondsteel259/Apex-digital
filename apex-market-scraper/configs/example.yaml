@@ -1,0 +1,21 @@
+scheduler:
+  cadence_hours: 12
+
+export:
+  output_dir: out
+  formats:
+    - csv
+    - xlsx
+  # Where exports should be written so the Apex bot can ingest them.
+  # In Docker, this should typically be a bind-mounted volume.
+  apex_bot_drop_dir: out/apex_bot_drop
+  dataset_name: market_listings
+
+sites:
+  - name: example_site
+    kind: example
+    enabled: true
+    api_key_env: EXAMPLE_SITE_API_KEY
+    params:
+      base_url: https://example.invalid/api
+      category: all
