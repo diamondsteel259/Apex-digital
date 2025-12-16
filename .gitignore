@@ -187,6 +187,9 @@ config_backups/
 logs/
 transcripts/
 
+# apex-market-scraper (bootstrapped alongside the bot)
+apex-market-scraper/out/
+
 # Temporary files
 *.tmp
 *.temp

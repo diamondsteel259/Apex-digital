@@ -1,0 +1,7 @@
+name: example_site
+kind: example
+enabled: true
+api_key_env: EXAMPLE_SITE_API_KEY
+params:
+  base_url: https://example.invalid/api
+  category: all

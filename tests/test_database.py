@@ -759,9 +759,10 @@ async def test_connect_initialization_failure_closes_connection(mock_logger):
 
 @pytest.mark.asyncio
 async def test_connect_with_retry_on_timeout(mock_logger):
-    """Test that connection is retried once after timeout."""
+    """Test that connection retries up to the configured max retry count."""
     import asyncio
     from unittest.mock import AsyncMock, patch
+
     from apex_core.database import Database
 
     database = Database(":memory:", connect_timeout=0.01)
@@ -771,14 +772,17 @@ async def test_connect_with_retry_on_timeout(mock_logger):
     async def conditional_timeout_connect(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            await asyncio.sleep(1.0)
+            # Trigger the asyncio.wait_for timeout with a minimal delay.
+            await asyncio.sleep(0.02)
         raise RuntimeError("Permanent connection error")
 
-    with patch('aiosqlite.connect', side_effect=conditional_timeout_connect):
-        with pytest.raises(RuntimeError, match="Permanent connection error"):
-            await database.connect()
+    # Prevent exponential backoff sleeps from slowing down the test.
+    with patch("apex_core.database.asyncio.sleep", new=AsyncMock()):
+        with patch("aiosqlite.connect", side_effect=conditional_timeout_connect):
+            with pytest.raises(RuntimeError, match="Permanent connection error"):
+                await database.connect()
 
-    assert call_count[0] == 2, "Should have attempted connection twice (initial + 1 retry)"
+    assert call_count[0] == 6, "Should attempt (max_retries + 1) times"
     assert database._connection is None
 
 
