@@ -1,0 +1,30 @@
+{
+  "scheduler": {
+    "cadence_hours": 12
+  },
+  "export": {
+    "output_dir": "out",
+    "formats": [
+      "csv"
+    ],
+    "dataset_name": "test_g2a"
+  },
+  "sites": [
+    {
+      "name": "g2a_test",
+      "kind": "g2a",
+      "enabled": true,
+      "api_key_env": null,
+      "params": {
+        "base_url": "https://www.g2a.com",
+        "category": "steam-keys",
+        "max_pages": 2,
+        "default_currency": "USD",
+        "category_whitelist": [
+          "Steam",
+          "Gaming"
+        ]
+      }
+    }
+  ]
+}

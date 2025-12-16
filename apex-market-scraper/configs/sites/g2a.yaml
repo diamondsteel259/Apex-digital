@@ -1,0 +1,31 @@
+scheduler:
+  cadence_hours: 12
+
+export:
+  output_dir: out
+  formats:
+    - csv
+    - xlsx
+  apex_bot_drop_dir: out/apex_bot_drop
+  dataset_name: g2a_market_listings
+
+sites:
+  - name: g2a_main
+    kind: g2a
+    enabled: true
+    api_key_env: G2A_API_KEY  # Optional: Set if G2A requires API authentication
+    params:
+      base_url: https://www.g2a.com
+      category: ""  # Empty for all categories, or specify like "steam-keys"
+      max_pages: 5  # Number of pages to scrape
+      default_currency: USD
+      currency_overrides: {}  # Optional: Map currencies like {"EUR": "USD"} to force USD
+      category_whitelist: ["Steam", "Epic", "Gaming"]  # Optional: Filter categories
+      
+      # HTTP client config
+      throttle_seconds: 1.0  # Delay between requests to respect rate limits
+      max_attempts: 3
+      backoff_initial_seconds: 0.5
+      backoff_max_seconds: 8.0
+      jitter_seconds: 0.25
+      respect_robots: true
