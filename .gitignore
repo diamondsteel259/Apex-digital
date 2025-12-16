@@ -189,6 +189,7 @@ transcripts/
 
 # apex-market-scraper (bootstrapped alongside the bot)
 apex-market-scraper/out/
+apex-market-scraper/tmp/
 
 # Temporary files
 *.tmp

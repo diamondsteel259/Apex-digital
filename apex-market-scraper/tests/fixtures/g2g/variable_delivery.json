@@ -1,0 +1,69 @@
+{
+  "listings": [
+    {
+      "id": "12350",
+      "title": "RuneScape Gold - 10M",
+      "category": "RuneScape",
+      "price": 5.99,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 100,
+      "seller": {
+        "id": "seller003",
+        "rating": 4.6
+      },
+      "soldCount": 320,
+      "stock": 75,
+      "deliveryTime": "1-3 hours",
+      "warranty": "30 days",
+      "refillAvailable": true,
+      "description": "Fast delivery, may take longer during peak hours",
+      "url": "https://www.g2g.com/offer/12350",
+      "preorder": false
+    },
+    {
+      "id": "12351",
+      "title": "Path of Exile Currency - Chaos Orb x100",
+      "category": "Path of Exile",
+      "price": 3.50,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 500,
+      "seller": {
+        "id": "seller004",
+        "rating": 4.8
+      },
+      "soldCount": 678,
+      "stock": 200,
+      "deliveryTime": "5-30 minutes",
+      "warranty": "14 days",
+      "refillAvailable": false,
+      "description": "Delivery time depends on availability",
+      "url": "https://www.g2g.com/offer/12351",
+      "preorder": false
+    },
+    {
+      "id": "12352",
+      "title": "Black Desert Online Silver - 1B",
+      "category": "BDO",
+      "price": 18.75,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 50,
+      "seller": {
+        "id": "seller005",
+        "rating": 4.7
+      },
+      "soldCount": 234,
+      "stock": 30,
+      "deliveryTime": "30 minutes - 2 hours",
+      "warranty": "30 days",
+      "refillAvailable": true,
+      "description": "Delivery window varies by region",
+      "url": "https://www.g2g.com/offer/12352",
+      "preorder": false
+    }
+  ],
+  "page": 1,
+  "total": 3
+}

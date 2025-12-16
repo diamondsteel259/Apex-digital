@@ -1,0 +1,69 @@
+{
+  "listings": [
+    {
+      "id": "12345",
+      "title": "World of Warcraft Gold - 1000g",
+      "category": "WoW",
+      "price": 15.99,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 100,
+      "seller": {
+        "id": "seller123",
+        "rating": 4.8
+      },
+      "soldCount": 523,
+      "stock": 50,
+      "deliveryTime": "5-10 minutes",
+      "warranty": "30 days",
+      "refillAvailable": true,
+      "description": "Fast delivery, 24/7 support available",
+      "url": "https://www.g2g.com/offer/12345",
+      "preorder": false
+    },
+    {
+      "id": "12346",
+      "title": "Final Fantasy XIV Gil - 5000000",
+      "category": "FFXIV",
+      "price": 25.50,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 50,
+      "seller": {
+        "id": "seller456",
+        "rating": 4.9
+      },
+      "soldCount": 1250,
+      "stock": 100,
+      "deliveryTime": "10-20 minutes",
+      "warranty": "60 days",
+      "refillAvailable": true,
+      "description": "Hand-farmed gold, safe delivery",
+      "url": "https://www.g2g.com/offer/12346",
+      "preorder": false
+    },
+    {
+      "id": "12347",
+      "title": "Lost Ark Gold - 10000g",
+      "category": "Lost Ark",
+      "price": 8.99,
+      "currency": "USD",
+      "minQuantity": 5,
+      "maxQuantity": 200,
+      "seller": {
+        "id": "seller789",
+        "rating": 4.7
+      },
+      "soldCount": 892,
+      "stock": 150,
+      "deliveryTime": "15-30 minutes",
+      "warranty": "14 days",
+      "refillAvailable": false,
+      "description": "Reliable seller with fast delivery",
+      "url": "https://www.g2g.com/offer/12347",
+      "preorder": false
+    }
+  ],
+  "page": 1,
+  "total": 3
+}

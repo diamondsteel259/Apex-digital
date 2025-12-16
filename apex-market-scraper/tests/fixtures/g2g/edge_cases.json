@@ -1,0 +1,71 @@
+{
+  "listings": [
+    {
+      "id": "12353",
+      "title": "Missing Fields Test",
+      "price": 9.99,
+      "currency": "USD",
+      "url": "https://www.g2g.com/offer/12353"
+    },
+    {
+      "id": "12354",
+      "title": "Different Currency EUR",
+      "category": "Test",
+      "price": 10.00,
+      "currency": "EUR",
+      "minQuantity": 1,
+      "maxQuantity": 10,
+      "seller": {
+        "id": "seller006",
+        "rating": 4.5
+      },
+      "soldCount": 100,
+      "stock": 50,
+      "deliveryTime": "10 minutes",
+      "warranty": null,
+      "refillAvailable": false,
+      "description": "Testing EUR currency",
+      "url": "https://www.g2g.com/offer/12354",
+      "preorder": false
+    },
+    {
+      "id": "12355",
+      "name": "Alternative Name Field",
+      "category": "Test",
+      "price": 5.00,
+      "currency": "GBP",
+      "min_qty": 2,
+      "max_qty": 20,
+      "sellerRating": "4.2/5",
+      "sold_count": 50,
+      "stockQuantity": 25,
+      "delivery_eta": "instant",
+      "refill": "yes",
+      "link": "https://www.g2g.com/offer/12355",
+      "sellerId": "seller007"
+    },
+    {
+      "id": "12356",
+      "title": "String Numbers Test",
+      "category": "Test",
+      "price": "12.99",
+      "currency": "USD",
+      "minQuantity": "1",
+      "maxQuantity": "100",
+      "seller": {
+        "id": "seller008",
+        "rating": "4.9"
+      },
+      "soldCount": "999",
+      "stock": "150",
+      "deliveryTime": "5 minutes",
+      "warranty": "30 days",
+      "refillAvailable": "true",
+      "description": "All numeric fields as strings",
+      "url": "https://www.g2g.com/offer/12356",
+      "preorder": "false"
+    }
+  ],
+  "page": 1,
+  "total": 4
+}
