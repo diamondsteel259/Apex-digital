@@ -1,0 +1,27 @@
+{
+  "listings": [
+    {
+      "id": "12348",
+      "title": "Elder Scrolls Online Gold - 100000",
+      "category": "ESO",
+      "price": 12.99,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 10,
+      "seller": {
+        "id": "seller001",
+        "rating": 4.5
+      },
+      "soldCount": 45,
+      "stock": 0,
+      "deliveryTime": "1-2 hours",
+      "warranty": "7 days",
+      "refillAvailable": true,
+      "description": "Out of stock temporarily",
+      "url": "https://www.g2g.com/offer/12348",
+      "preorder": false
+    }
+  ],
+  "page": 1,
+  "total": 1
+}

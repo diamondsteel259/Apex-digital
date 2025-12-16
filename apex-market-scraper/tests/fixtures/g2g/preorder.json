@@ -1,0 +1,27 @@
+{
+  "listings": [
+    {
+      "id": "12349",
+      "title": "New Game Release Currency - 1000 Coins",
+      "category": "New Game",
+      "price": 29.99,
+      "currency": "USD",
+      "minQuantity": 1,
+      "maxQuantity": 25,
+      "seller": {
+        "id": "seller002",
+        "rating": 4.9
+      },
+      "soldCount": 15,
+      "stock": 500,
+      "deliveryTime": "Available on release day",
+      "warranty": "90 days",
+      "refillAvailable": true,
+      "description": "Preorder for launch day delivery",
+      "url": "https://www.g2g.com/offer/12349",
+      "preorder": true
+    }
+  ],
+  "page": 1,
+  "total": 1
+}

@@ -98,6 +98,29 @@ A simple convention:
 - scraper writes exports to: `<apex_bot_drop_dir>/market/`
 - bot imports from the same directory on a cadence or on-demand
 
+## Supported Sites
+
+### G2G (Gaming Marketplace)
+
+The G2G scraper extracts product listings from https://www.g2g.com including:
+- Product details (name, category, price)
+- Seller information (rating, sold count)
+- Stock and availability
+- Delivery ETA and warranty information
+- Refill availability
+
+See [docs/G2G_SCRAPER.md](docs/G2G_SCRAPER.md) for detailed documentation.
+
+**Quick start:**
+```bash
+python -m apex_market_scraper.cli \
+  --config configs/sites/g2g.yaml \
+  scrape \
+  --sites g2g_main \
+  --dry-run \
+  --raw-json tmp/g2g.json
+```
+
 ## Development notes
 
 - Lint: `ruff check .`
